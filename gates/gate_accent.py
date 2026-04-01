@@ -4,6 +4,7 @@ Env : utmos (python 3.9)
 Uses wav2vec2-large-xlsr-53 to extract embeddings, then computes cosine
 similarity to accent reference embeddings (american / british / indian).
 Pass = target accent proximity >= threshold.
+Device priority: CUDA → MPS (Apple Silicon) → CPU.
 """
 
 import os
@@ -20,21 +21,35 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 
 
+# ── Device detection ───────────────────────────────────────────────────────────
+def _get_device():
+    """Return the best available torch device: cuda > mps > cpu."""
+    if torch.cuda.is_available():
+        return "cuda"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
 # ── Model loading ──────────────────────────────────────────────────────────────
 def load_model():
     MODEL_NAME = "facebook/wav2vec2-large-xlsr-53"
 
+    device = _get_device()
+    print(f"Accent device: {device}")
     print(f"Loading {MODEL_NAME}...")
+
     feature_extractor = Wav2Vec2FeatureExtractor.from_pretrained(MODEL_NAME)
     wav2vec2          = Wav2Vec2Model.from_pretrained(MODEL_NAME)
+    wav2vec2.to(device)
     wav2vec2.eval()
 
     print(f"wav2vec2 loaded: {MODEL_NAME}")
-    return {"feature_extractor": feature_extractor, "wav2vec2": wav2vec2}
+    return {"feature_extractor": feature_extractor, "wav2vec2": wav2vec2, "device": device}
 
 
 # ── Embedding and similarity ───────────────────────────────────────────────────
-def get_accent_embedding(audio_path, feature_extractor, wav2vec2):
+def get_accent_embedding(audio_path, feature_extractor, wav2vec2, device="cpu"):
     wav, sr = torchaudio.load(audio_path)
 
     if wav.shape[0] > 1:
@@ -50,8 +65,10 @@ def get_accent_embedding(audio_path, feature_extractor, wav2vec2):
         wav.squeeze().numpy(),
         sampling_rate=16000,
         return_tensors="pt",
-        padding=True
+        padding=True,
     )
+    # Move inputs to the same device as the model
+    inputs = {k: v.to(device) for k, v in inputs.items()}
 
     with torch.no_grad():
         outputs = wav2vec2(**inputs)
@@ -73,6 +90,7 @@ def run_gate(model_state=None):
 
     feature_extractor = model_state["feature_extractor"]
     wav2vec2          = model_state["wav2vec2"]
+    device            = model_state.get("device", "cpu")
 
     BASE_DIR   = config.ACCENT_BASE_DIR
     MODELS_DIR = os.path.join(BASE_DIR, "models")
@@ -135,7 +153,7 @@ def run_gate(model_state=None):
     accent_ref_embeddings = {}
     for accent_name, ref_path in ACCENT_REFERENCES.items():
         try:
-            emb = get_accent_embedding(ref_path, feature_extractor, wav2vec2)
+            emb = get_accent_embedding(ref_path, feature_extractor, wav2vec2, device)
             accent_ref_embeddings[accent_name] = emb
             print(f"  {accent_name}: {ref_path}")
         except Exception as e:
@@ -156,7 +174,7 @@ def run_gate(model_state=None):
             audio_path  = os.path.join(MODELS_DIR, model, wav_file)
 
             try:
-                emb = get_accent_embedding(audio_path, feature_extractor, wav2vec2)
+                emb = get_accent_embedding(audio_path, feature_extractor, wav2vec2, device)
                 embeddings[sample_name] = emb
                 print(f"  Embedded: {sample_name}")
             except Exception as e:

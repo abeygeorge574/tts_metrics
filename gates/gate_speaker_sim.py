@@ -3,6 +3,7 @@ Gate: Speaker Similarity
 Env : base (python 3.13)
 Uses SpeechBrain ECAPA-TDNN to compute cosine similarity between
 a reference (utterance or enrollment) and TTS audio.
+Device priority: CUDA → MPS (Apple Silicon) → CPU.
 """
 
 import os
@@ -15,6 +16,16 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
+
+
+# ── Device detection ───────────────────────────────────────────────────────────
+def _get_device():
+    """Return the best available torch device: cuda > mps > cpu."""
+    if torch.cuda.is_available():
+        return "cuda"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
 
 
 # ── Compatibility patches ──────────────────────────────────────────────────────
@@ -82,13 +93,16 @@ def load_model():
 
     from speechbrain.inference.speaker import EncoderClassifier
 
+    device = _get_device()
+    print(f"Speaker similarity device: {device}")
+
     classifier = EncoderClassifier.from_hparams(
         source="speechbrain/spkrec-ecapa-voxceleb",
-        run_opts={"device": "cpu"}
+        run_opts={"device": device},
     )
 
     print("ECAPA-TDNN loaded.")
-    return {"classifier": classifier}
+    return {"classifier": classifier, "device": device}
 
 
 # ── Embedding and similarity functions ────────────────────────────────────────

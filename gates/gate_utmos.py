@@ -1,8 +1,9 @@
 """
 Gate: UTMOS (naturalness MOS)
 Env : utmos (python 3.9)
-Scores TTS audio with the UTMOS model (checkpoint-based, CPU).
+Scores TTS audio with the UTMOS model (checkpoint-based).
 Returns scores in the 1–5 MOS range.
+Device priority: CUDA → MPS (Apple Silicon) → CPU.
 """
 
 import os
@@ -15,10 +16,47 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 
 
+# ── Device detection ───────────────────────────────────────────────────────────
+def _get_device():
+    """Return the best available torch device: cuda > mps > cpu."""
+    import torch
+    if torch.cuda.is_available():
+        return "cuda"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
+
+# ── lightning_fabric compatibility patch ──────────────────────────────────────
+def _patch_lightning_fabric():
+    """
+    PyTorch >= 2.x sets weights_only=True by default in torch.load, which
+    breaks lightning_fabric checkpoint loading.  Monkey-patch torch.load to
+    always pass weights_only=False so the UTMOS checkpoint loads correctly
+    without any manual sed edits.
+    """
+    try:
+        import torch
+        if getattr(torch, "_lightning_fabric_patched", False):
+            return
+        _orig_load = torch.load
+
+        def _patched_load(*args, **kwargs):
+            kwargs.setdefault("weights_only", False)
+            return _orig_load(*args, **kwargs)
+
+        torch.load = _patched_load
+        torch._lightning_fabric_patched = True
+    except Exception:
+        pass
+
+
 # ── Model loading ──────────────────────────────────────────────────────────────
 def load_model():
     import torch
     import torchaudio
+
+    _patch_lightning_fabric()
 
     UTMOS_MODEL_DIR = config.UTMOS_MODEL_DIR
     UTMOS_CKPT      = config.UTMOS_CKPT
@@ -32,16 +70,19 @@ def load_model():
 
     from score import Score
 
+    device = _get_device()
+    print(f"UTMOS device: {device}")
+
     scorer = Score(
         ckpt_path=UTMOS_CKPT,
         input_sample_rate=16000,
-        device="cpu"
+        device=device,
     )
 
     print(f"UTMOS model loaded from {UTMOS_CKPT}")
     print(f"Threshold: {config.UTMOS_THRESHOLD}")
 
-    return {"scorer": scorer}
+    return {"scorer": scorer, "device": device}
 
 
 # ── Score single file ──────────────────────────────────────────────────────────

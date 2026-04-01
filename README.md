@@ -83,7 +83,83 @@ WER_PER_Production/WER_TEST/
 | Gate | Weight location |
 |---|---|
 | NISQA | `NISQA_prod/model/weights/nisqa.tar` |
-| UTMOS | `UTMOS/model/simple/epoch=3-step=7459.ckpt` + `wav2vec_small.pt` |
+| UTMOS | `UTMOS/model/simple/epoch=3-step=7459.ckpt` + `UTMOS/model/simple/wav2vec_small.pt` |
+
+#### Download commands
+
+**NISQA** — clone the repo directly into the expected path:
+```bash
+git clone https://github.com/gabrielmittag/NISQA.git NISQA_prod/model
+```
+The weights file `weights/nisqa.tar` ships with the repo.
+
+**UTMOS** — download checkpoint and wav2vec backbone:
+```bash
+mkdir -p UTMOS/model/simple
+
+# UTMOS checkpoint (from the UTMOS GitHub release)
+curl -L "https://huggingface.co/spaces/sarulab-speech/UTMOS-demo/resolve/main/epoch%3D3-step%3D7459.ckpt" \
+     -o UTMOS/model/simple/epoch=3-step=7459.ckpt
+
+# wav2vec 2.0 small backbone (from Facebook Research)
+curl -L "https://dl.fbaipublicfiles.com/fairseq/wav2vec/wav2vec_small.pt" \
+     -o UTMOS/model/simple/wav2vec_small.pt
+```
+
+Also clone the UTMOS inference code:
+```bash
+git clone https://github.com/sarulab-speech/UTMOS22.git UTMOS/model
+```
+
+### Enrollment file (Speaker Similarity gate)
+
+The speaker similarity gate supports two reference modes:
+
+1. **Per-utterance reference** — place matching `.wav` files in `speaker_similarity/reference/` (one per sample, same filename as the model output). Best for measuring identity per line.
+2. **Enrollment** — place a single reference clip at `speaker_similarity/enrollment/speaker.wav`. Used as fallback when a per-utterance reference is missing, or as the sole reference if no `reference/` folder exists.
+
+```
+speaker_similarity/
+├── enrollment/
+│   └── speaker.wav        ← single reference clip for the target speaker
+├── reference/             ← optional: per-utterance ground-truth audio
+│   ├── sample_01.wav
+│   └── sample_02.wav
+└── models/
+    ├── model_1/
+    └── model_2/
+```
+
+At least one of `enrollment/speaker.wav` or `reference/` must be present; if neither exists the gate skips all segments.
+
+---
+
+## Hardware / device support
+
+All gates that use a neural model perform automatic device detection at runtime:
+
+```
+CUDA (NVIDIA GPU)  →  MPS (Apple Silicon)  →  CPU
+```
+
+| Gate | GPU accelerated? | Notes |
+|---|---|---|
+| WER | Yes (Whisper) | MLX on Apple Silicon via `whisper-mlx`, CUDA via `openai-whisper`, CPU fallback |
+| NISQA | CPU only | PyTorch inference is fast enough on CPU |
+| UTMOS | Yes | CUDA or MPS picked up automatically |
+| Speaker Sim | Yes | ECAPA-TDNN moves to detected device |
+| SER | CPU only | emotion2vec runs on CPU |
+| Pitch | CPU only | librosa/pyin — no GPU path |
+| Duration | CPU only | header read only |
+| VAD | CPU only | ffmpeg + scipy |
+| Amplitude | CPU only | pyloudnorm + librosa |
+| Accent | Yes | wav2vec2-large-xlsr-53 moves to detected device |
+
+No manual configuration is needed — the gates detect the best available device automatically.
+
+### One-time setup: PyTorch checkpoint compatibility
+
+UTMOS uses a `lightning_fabric` checkpoint. On PyTorch ≥ 2.x the default `weights_only=True` in `torch.load` breaks loading. The gate patches `torch.load` automatically at runtime — **no manual sed edits required**.
 
 ---
 
