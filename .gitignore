@@ -20,3 +20,9 @@ __pycache__/
 # Conda
 *.ckpt
 *.tar
+
+# Claude Code internals
+.claude/
+
+# Pipeline output
+output/
