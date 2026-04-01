@@ -18,4 +18,5 @@ __pycache__/
 .DS_Store
 
 # Conda
-*.egg-info/
+*.egg-info/*.ckpt
+*.tar
