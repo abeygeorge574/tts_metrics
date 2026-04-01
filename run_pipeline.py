@@ -6,7 +6,7 @@ Gates and their environments:
   base env  (python 3.13): nisqa, speaker_sim, ser, pitch, duration, vad, amplitude
 
 Gates in the utmos env are invoked as subprocess calls using the conda env python,
-so this script can run in either env (base is typical).
+so this script must be run from the base env.
 
 Usage:
   python run_pipeline.py                        # run all gates
@@ -19,8 +19,17 @@ import os
 import sys
 import subprocess
 import argparse
+import logging
 
-# ── locate config ──────────────────────────────────────────────────────────────
+# ── Logging ────────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(message)s",
+    datefmt="%H:%M:%S",
+)
+log = logging.getLogger("pipeline")
+
+# ── Locate config ──────────────────────────────────────────────────────────────
 ROOT = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, ROOT)
 import config
@@ -30,16 +39,16 @@ import config
 #   env = "utmos" → invoked via subprocess with the utmos conda python
 #   env = "base"  → imported and called directly in this process
 GATE_REGISTRY = [
-    ("wer",        "gates/gate_wer.py",        "utmos"),
-    ("nisqa",      "gates/gate_nisqa.py",       "base"),
-    ("utmos",      "gates/gate_utmos.py",       "utmos"),
-    ("speaker_sim","gates/gate_speaker_sim.py", "base"),
-    ("ser",        "gates/gate_ser.py",         "base"),
-    ("pitch",      "gates/gate_pitch.py",       "base"),
-    ("duration",   "gates/gate_duration.py",    "base"),
-    ("vad",        "gates/gate_vad.py",         "base"),
-    ("amplitude",  "gates/gate_amplitude.py",   "base"),
-    ("accent",     "gates/gate_accent.py",      "utmos"),
+    ("wer",         "gates/gate_wer.py",         "utmos"),
+    ("nisqa",       "gates/gate_nisqa.py",        "base"),
+    ("utmos",       "gates/gate_utmos.py",        "utmos"),
+    ("speaker_sim", "gates/gate_speaker_sim.py",  "base"),
+    ("ser",         "gates/gate_ser.py",          "base"),
+    ("pitch",       "gates/gate_pitch.py",        "base"),
+    ("duration",    "gates/gate_duration.py",     "base"),
+    ("vad",         "gates/gate_vad.py",          "base"),
+    ("amplitude",   "gates/gate_amplitude.py",    "base"),
+    ("accent",      "gates/gate_accent.py",       "utmos"),
 ]
 
 GATE_KEYS = [g[0] for g in GATE_REGISTRY]
@@ -48,46 +57,78 @@ GATE_KEYS = [g[0] for g in GATE_REGISTRY]
 def find_conda_python(env_name):
     """
     Locate the python executable for a named conda environment.
-    Tries common miniconda/anaconda locations on macOS.
-    """
-    candidates = [
-        os.path.expanduser(f"~/miniconda3/envs/{env_name}/bin/python"),
-        os.path.expanduser(f"~/anaconda3/envs/{env_name}/bin/python"),
-        os.path.expanduser(f"~/opt/miniconda3/envs/{env_name}/bin/python"),
-        os.path.expanduser(f"~/opt/anaconda3/envs/{env_name}/bin/python"),
-        f"/opt/homebrew/Caskroom/miniconda/base/envs/{env_name}/bin/python",
-    ]
-    for path in candidates:
-        if os.path.isfile(path):
-            return path
 
-    # fallback: try conda run
+    Resolution order:
+      1. CONDA_PREFIX env var (set when a conda env is active) — walks up to
+         find envs/ sibling directory.
+      2. `conda run --no-capture-output -n <env> which python` — works on any
+         conda installation regardless of install path.
+      3. Hard-coded common macOS paths as a last resort.
+    """
+    # 1. Derive root from active conda prefix
+    conda_prefix = os.environ.get("CONDA_PREFIX", "")
+    if conda_prefix:
+        # CONDA_PREFIX is e.g. ~/miniconda3 (base) or ~/miniconda3/envs/utmos
+        # Walk up until we find a directory that contains envs/<env_name>
+        candidate_root = conda_prefix
+        for _ in range(3):
+            candidate = os.path.join(candidate_root, "envs", env_name, "bin", "python")
+            if os.path.isfile(candidate):
+                return candidate
+            candidate_root = os.path.dirname(candidate_root)
+
+    # 2. Ask conda itself
+    try:
+        result = subprocess.run(
+            ["conda", "run", "--no-capture-output", "-n", env_name, "which", "python"],
+            capture_output=True, text=True, timeout=15
+        )
+        if result.returncode == 0:
+            path = result.stdout.strip()
+            if os.path.isfile(path):
+                return path
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+
+    # 3. Common macOS fallback paths
+    for base in [
+        os.path.expanduser("~/miniconda3"),
+        os.path.expanduser("~/anaconda3"),
+        os.path.expanduser("~/opt/miniconda3"),
+        os.path.expanduser("~/opt/anaconda3"),
+        "/opt/homebrew/Caskroom/miniconda/base",
+        "/opt/miniconda3",
+    ]:
+        candidate = os.path.join(base, "envs", env_name, "bin", "python")
+        if os.path.isfile(candidate):
+            return candidate
+
     return None
 
 
 def run_utmos_gate(gate_key, gate_script, output_dir):
-    """Run a gate in the utmos conda environment via subprocess."""
+    """Run a gate inside the utmos conda environment via subprocess."""
     conda_python = find_conda_python(config.UTMOS_CONDA_ENV)
     gate_script_abs = os.path.join(ROOT, gate_script)
     gate_output_dir = os.path.join(output_dir, gate_key)
 
     if conda_python:
         cmd = [conda_python, gate_script_abs, "--output-dir", gate_output_dir]
-        print(f"\n[{gate_key}] Running via {conda_python}")
+        log.info("[%s] subprocess → %s", gate_key, conda_python)
     else:
-        # fall back to conda run
         cmd = [
-            "conda", "run", "-n", config.UTMOS_CONDA_ENV,
-            "python", gate_script_abs, "--output-dir", gate_output_dir
+            "conda", "run", "--no-capture-output",
+            "-n", config.UTMOS_CONDA_ENV,
+            "python", gate_script_abs, "--output-dir", gate_output_dir,
         ]
-        print(f"\n[{gate_key}] Running via conda run -n {config.UTMOS_CONDA_ENV}")
+        log.info("[%s] subprocess → conda run -n %s", gate_key, config.UTMOS_CONDA_ENV)
 
     result = subprocess.run(cmd, text=True)
     if result.returncode != 0:
-        print(f"\n[{gate_key}] FAILED (exit code {result.returncode})")
+        log.error("[%s] FAILED (exit code %d)", gate_key, result.returncode)
         return False
 
-    print(f"\n[{gate_key}] DONE")
+    log.info("[%s] DONE", gate_key)
     return True
 
 
@@ -95,26 +136,27 @@ def run_base_gate(gate_key, gate_module_name, output_dir):
     """Import and run a gate directly in this process (base env)."""
     import importlib.util
 
-    gate_script_abs = os.path.join(ROOT, f"gates/{gate_module_name}.py")
+    gate_script_abs = os.path.join(ROOT, "gates", f"{gate_module_name}.py")
     spec   = importlib.util.spec_from_file_location(gate_module_name, gate_script_abs)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
 
     gate_output_dir = os.path.join(output_dir, gate_key)
 
-    print(f"\n{'='*60}")
-    print(f"Gate: {gate_key.upper()}")
-    print(f"{'='*60}")
+    log.info("")
+    log.info("=" * 60)
+    log.info("Gate: %s", gate_key.upper())
+    log.info("=" * 60)
 
     try:
         model_state    = module.load_model()
         df, summary_df = module.run_gate(model_state)
         module.print_results(df, summary_df)
         module.save_results(df, summary_df, gate_output_dir)
-        print(f"\n[{gate_key}] DONE")
+        log.info("[%s] DONE", gate_key)
         return True
     except Exception as e:
-        print(f"\n[{gate_key}] FAILED: {e}")
+        log.exception("[%s] FAILED: %s", gate_key, e)
         return False
 
 
@@ -127,28 +169,28 @@ def main():
         nargs="*",
         choices=GATE_KEYS,
         default=None,
-        help="Gate(s) to run. Default: all gates."
+        help="Gate(s) to run. Default: all gates.",
     )
     parser.add_argument(
         "--skip",
         nargs="*",
         choices=GATE_KEYS,
         default=[],
-        help="Gate(s) to skip."
+        help="Gate(s) to skip.",
     )
     parser.add_argument(
         "--output-dir",
         default=config.OUTPUT_DIR,
-        help=f"Root output directory. Default: {config.OUTPUT_DIR}"
+        help=f"Root output directory. Default: {config.OUTPUT_DIR}",
     )
     args = parser.parse_args()
 
     gates_to_run = args.gates if args.gates else GATE_KEYS
     gates_to_run = [g for g in gates_to_run if g not in (args.skip or [])]
 
-    print(f"Pipeline starting.")
-    print(f"Gates to run : {gates_to_run}")
-    print(f"Output dir   : {args.output_dir}")
+    log.info("Pipeline starting.")
+    log.info("Gates     : %s", gates_to_run)
+    log.info("Output dir: %s", args.output_dir)
     os.makedirs(args.output_dir, exist_ok=True)
 
     results_summary = {}
@@ -167,19 +209,20 @@ def main():
         results_summary[gate_key] = "PASS" if success else "FAIL"
 
     # ── Final summary ──────────────────────────────────────────────────────────
-    print(f"\n\n{'='*60}")
-    print("PIPELINE COMPLETE")
-    print(f"{'='*60}")
-    for gate_key, status in results_summary.items():
-        print(f"  {gate_key:<14} {status}")
+    log.info("")
+    log.info("=" * 60)
+    log.info("PIPELINE COMPLETE")
+    log.info("=" * 60)
+    for key, status in results_summary.items():
+        log.info("  %-14s %s", key, status)
 
     failed = [k for k, v in results_summary.items() if v == "FAIL"]
     if failed:
-        print(f"\nFailed gates: {failed}")
+        log.error("Failed gates: %s", failed)
         sys.exit(1)
     else:
-        print(f"\nAll gates completed successfully.")
-        print(f"Results in: {args.output_dir}")
+        log.info("All gates completed successfully.")
+        log.info("Results in: %s", args.output_dir)
 
 
 if __name__ == "__main__":
