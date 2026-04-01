@@ -1,0 +1,21 @@
+# Audio files
+*.wav
+*.mp3
+*.flac
+*.m4a
+
+# Model weights
+*.pt
+*.bin
+*.safetensors
+
+# Python
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# Mac
+.DS_Store
+
+# Conda
+*.egg-info/
