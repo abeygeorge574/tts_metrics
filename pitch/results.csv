@@ -1,0 +1,3 @@
+Model,Sample,TTS Median,TTS Std,TTS Voiced,Ref Median,Ref Std,Ref Voiced,Median Delta,Std Ratio,Std Abs Pass,Std Ratio Pass,Median Pass,Final Pass,Ref Flag,_is_degraded
+m1,YASH 2,145.15,51.72,0.657,145.99,62.46,0.609,0.84,0.828,✅,✅,✅,✅ PASS,—,False
+m1,YASH_01,145.99,62.46,0.609,145.15,51.72,0.657,0.84,1.208,✅,✅,✅,✅ PASS,—,False

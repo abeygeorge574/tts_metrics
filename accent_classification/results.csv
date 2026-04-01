@@ -1,0 +1,5 @@
+Model,Sample,Character,Closest Accent,Target Pass,Final Pass,Proximity_american,Proximity_british,Proximity_indian
+m1,clean_baseline 2,all,american,✅,✅ PASS,1.0,1.0,1.0
+m1,clean_baseline,all,american,✅,✅ PASS,1.0,1.0,1.0
+m2,clean_baseline 2,all,american,✅,✅ PASS,1.0,1.0,1.0
+m2,clean_baseline,all,american,✅,✅ PASS,1.0,1.0,1.0

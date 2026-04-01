@@ -1,0 +1,3 @@
+Model,Sample,Ref Pauses,TTS Pauses,Matched,Unmatched Ref,Unmatched TTS,Count Delta,Med Pos Offset,Med Dur Ratio,Count Pass,Position Pass,Duration Pass,Final Pass,Ref Flag,_is_degraded
+m1,YASH 2,99,76,55,44,21,65,0.799,0.928,❌,❌,✅,"❌ FAIL (Count, Position)",—,False
+m1,YASH_01,76,99,55,21,44,65,0.712,1.068,❌,❌,✅,"❌ FAIL (Count, Position)",—,False

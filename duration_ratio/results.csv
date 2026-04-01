@@ -1,0 +1,3 @@
+Model,Sample,Ref Dur,TTS Dur,Ratio,Final Pass,Failure Type
+m1,YASH 2,332.435,254.855,0.7666,❌ FAIL,Too Short
+m1,YASH_01,254.855,332.435,1.3044,❌ FAIL,Too Long
