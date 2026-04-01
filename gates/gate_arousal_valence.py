@@ -27,12 +27,14 @@ import sys
 import argparse
 import logging
 
+import json
 import torch
 import torch.nn as nn
 import numpy as np
 import torchaudio
 import pandas as pd
-from transformers import Wav2Vec2Processor, Wav2Vec2PreTrainedModel, Wav2Vec2Model
+from huggingface_hub import snapshot_download
+from transformers import Wav2Vec2FeatureExtractor, Wav2Vec2Config, Wav2Vec2Model
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
@@ -50,15 +52,15 @@ def _get_device():
     return "cpu"
 
 
-# ── Custom model head (from audeering model card) ──────────────────────────────
+# ── Regression head (plain nn.Module — no PreTrainedModel dependency) ─────────
 class _RegressionHead(nn.Module):
-    def __init__(self, config):
+    def __init__(self, hidden_size, num_labels, dropout_prob=0.1):
         super().__init__()
-        self.dense    = nn.Linear(config.hidden_size, config.hidden_size)
-        self.dropout  = nn.Dropout(config.final_dropout)
-        self.out_proj = nn.Linear(config.hidden_size, config.num_labels)
+        self.dense    = nn.Linear(hidden_size, hidden_size)
+        self.dropout  = nn.Dropout(dropout_prob)
+        self.out_proj = nn.Linear(hidden_size, num_labels)
 
-    def forward(self, features, **kwargs):
+    def forward(self, features):
         x = features
         x = self.dropout(x)
         x = self.dense(x)
@@ -68,15 +70,17 @@ class _RegressionHead(nn.Module):
         return x
 
 
-class _EmotionModel(Wav2Vec2PreTrainedModel):
-    """wav2vec2 backbone + regression head for arousal/dominance/valence."""
+class _EmotionModel(nn.Module):
+    """wav2vec2 backbone + regression head for arousal/dominance/valence.
 
-    def __init__(self, config):
-        super().__init__(config)
-        self.config     = config
-        self.wav2vec2   = Wav2Vec2Model(config)
-        self.classifier = _RegressionHead(config)
-        self.init_weights()
+    Built as a plain nn.Module so it is not affected by PreTrainedModel
+    API changes across transformers versions.
+    """
+
+    def __init__(self, backbone, hidden_size, num_labels, dropout_prob=0.1):
+        super().__init__()
+        self.wav2vec2   = backbone
+        self.classifier = _RegressionHead(hidden_size, num_labels, dropout_prob)
 
     def forward(self, input_values):
         outputs       = self.wav2vec2(input_values)
@@ -84,6 +88,31 @@ class _EmotionModel(Wav2Vec2PreTrainedModel):
         hidden_states = torch.mean(hidden_states, dim=1)
         logits        = self.classifier(hidden_states)
         return hidden_states, logits
+
+
+# ── Config patch ───────────────────────────────────────────────────────────────
+def _download_and_patch(model_name):
+    """
+    Download model to HF cache and patch vocab_size=null → 32 in config.json.
+
+    Newer huggingface_hub strictly rejects None for typed fields.  This model's
+    config.json ships with "vocab_size": null (it's a regression model with no
+    vocabulary).  We fix the cached file in-place so standard from_pretrained
+    works.  The patch is idempotent — only applied once on first download.
+    """
+    local_dir   = snapshot_download(model_name)
+    config_path = os.path.join(local_dir, "config.json")
+
+    with open(config_path) as f:
+        cfg = json.load(f)
+
+    if cfg.get("vocab_size") is None:
+        cfg["vocab_size"] = 32          # wav2vec2 standard; unused by regression head
+        with open(config_path, "w") as f:
+            json.dump(cfg, f, indent=2)
+        log.info("Patched vocab_size=null → 32 in cached config.json")
+
+    return local_dir
 
 
 # ── Model loading ──────────────────────────────────────────────────────────────
@@ -94,8 +123,33 @@ def load_model():
     log.info("Arousal/Valence device: %s", device)
     log.info("Loading %s ...", MODEL_NAME)
 
-    processor = Wav2Vec2Processor.from_pretrained(MODEL_NAME)
-    model     = _EmotionModel.from_pretrained(MODEL_NAME)
+    local_dir = _download_and_patch(MODEL_NAME)
+
+    # Feature extractor for audio preprocessing
+    processor = Wav2Vec2FeatureExtractor.from_pretrained(local_dir)
+
+    # Load backbone using standard transformers (fully supported)
+    backbone  = Wav2Vec2Model.from_pretrained(local_dir)
+
+    # Read head dimensions from config
+    hf_cfg    = Wav2Vec2Config.from_pretrained(local_dir)
+    num_labels    = getattr(hf_cfg, "num_labels",    3)
+    final_dropout = getattr(hf_cfg, "final_dropout", 0.1)
+    hidden_size   = hf_cfg.hidden_size
+
+    # Build composite model
+    model = _EmotionModel(backbone, hidden_size, num_labels, final_dropout)
+
+    # Load regression head weights from the full checkpoint
+    ckpt_path = os.path.join(local_dir, "pytorch_model.bin")
+    state_dict = torch.load(ckpt_path, map_location="cpu", weights_only=False)
+    head_state = {
+        k.replace("classifier.", ""): v
+        for k, v in state_dict.items()
+        if k.startswith("classifier.")
+    }
+    model.classifier.load_state_dict(head_state, strict=True)
+
     model.to(device)
     model.eval()
 
