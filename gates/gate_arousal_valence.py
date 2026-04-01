@@ -160,9 +160,19 @@ def load_model():
     return {"processor": processor, "model": model, "device": device}
 
 
+# wav2vec2 attention is O(n²) — cap chunk length to avoid OOM on long audio.
+# Scores are averaged across chunks, which is a reasonable utterance-level estimate.
+_MAX_CHUNK_SAMPLES = 30 * 16000   # 30 seconds at 16 kHz
+_MIN_CHUNK_SAMPLES = 1  * 16000   # 1 second  — discard shorter tail chunks
+
+
 # ── Score a single audio file ──────────────────────────────────────────────────
 def _score(audio_path, processor, model, device):
-    """Return (arousal, dominance, valence) floats in [0, 1]."""
+    """Return (arousal, dominance, valence) floats in [0, 1].
+
+    Long audio is split into ≤30 s chunks and scores are averaged, preventing
+    the O(n²) attention allocation that causes OOM on MPS/GPU for long files.
+    """
     wav, sr = torchaudio.load(audio_path)
 
     if wav.shape[0] > 1:
@@ -173,18 +183,34 @@ def _score(audio_path, processor, model, device):
 
     wav_np = wav.squeeze().numpy()
 
-    inputs = processor(
-        wav_np,
-        sampling_rate=16000,
-        return_tensors="pt",
-        padding=True,
-    )
-    inputs = {k: v.to(device) for k, v in inputs.items()}
+    # Split into chunks; discard tail chunks that are too short to be reliable
+    if len(wav_np) > _MAX_CHUNK_SAMPLES:
+        chunks = [
+            wav_np[i : i + _MAX_CHUNK_SAMPLES]
+            for i in range(0, len(wav_np), _MAX_CHUNK_SAMPLES)
+        ]
+        chunks = [c for c in chunks if len(c) >= _MIN_CHUNK_SAMPLES]
+        if not chunks:
+            chunks = [wav_np[:_MAX_CHUNK_SAMPLES]]
+    else:
+        chunks = [wav_np]
 
-    with torch.no_grad():
-        _, logits = model(inputs["input_values"])
+    all_scores = []
+    for chunk in chunks:
+        inputs = processor(
+            chunk,
+            sampling_rate=16000,
+            return_tensors="pt",
+            padding=True,
+        )
+        inputs = {k: v.to(device) for k, v in inputs.items()}
 
-    scores = logits.squeeze().cpu().numpy()
+        with torch.no_grad():
+            _, logits = model(inputs["input_values"])
+
+        all_scores.append(logits.squeeze().cpu().numpy())
+
+    scores = np.mean(all_scores, axis=0)
     # model output order: [arousal, dominance, valence]
     return round(float(scores[0]), 4), round(float(scores[1]), 4), round(float(scores[2]), 4)
 
