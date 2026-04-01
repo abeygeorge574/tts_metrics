@@ -3,7 +3,7 @@ run_pipeline.py — main entry point for the TTS evaluation pipeline.
 
 Gates and their environments:
   utmos env (python 3.9) : wer, utmos, accent
-  base env  (python 3.13): nisqa, speaker_sim, ser, pitch, duration, vad, amplitude
+  base env  (python 3.13): nisqa, speaker_sim, ser, arousal_valence, pitch, duration, vad, amplitude
 
 Gates in the utmos env are invoked as subprocess calls using the conda env python,
 so this script must be run from the base env.
@@ -39,16 +39,17 @@ import config
 #   env = "utmos" → invoked via subprocess with the utmos conda python
 #   env = "base"  → imported and called directly in this process
 GATE_REGISTRY = [
-    ("wer",         "gates/gate_wer.py",         "utmos"),
-    ("nisqa",       "gates/gate_nisqa.py",        "base"),
-    ("utmos",       "gates/gate_utmos.py",        "utmos"),
-    ("speaker_sim", "gates/gate_speaker_sim.py",  "base"),
-    ("ser",         "gates/gate_ser.py",          "base"),
-    ("pitch",       "gates/gate_pitch.py",        "base"),
-    ("duration",    "gates/gate_duration.py",     "base"),
-    ("vad",         "gates/gate_vad.py",          "base"),
-    ("amplitude",   "gates/gate_amplitude.py",    "base"),
-    ("accent",      "gates/gate_accent.py",       "utmos"),
+    ("wer",              "gates/gate_wer.py",              "utmos"),
+    ("nisqa",            "gates/gate_nisqa.py",            "base"),
+    ("utmos",            "gates/gate_utmos.py",            "utmos"),
+    ("speaker_sim",      "gates/gate_speaker_sim.py",      "base"),
+    ("ser",              "gates/gate_ser.py",              "base"),
+    ("arousal_valence",  "gates/gate_arousal_valence.py",  "base"),
+    ("pitch",            "gates/gate_pitch.py",            "base"),
+    ("duration",         "gates/gate_duration.py",         "base"),
+    ("vad",              "gates/gate_vad.py",              "base"),
+    ("amplitude",        "gates/gate_amplitude.py",        "base"),
+    ("accent",           "gates/gate_accent.py",           "utmos"),
 ]
 
 GATE_KEYS = [g[0] for g in GATE_REGISTRY]

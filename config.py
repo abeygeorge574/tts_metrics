@@ -12,7 +12,8 @@ PITCH_BASE_DIR    = os.path.join(ROOT, "pitch")
 DURATION_BASE_DIR = os.path.join(ROOT, "duration_ratio")
 VAD_BASE_DIR      = os.path.join(ROOT, "pause_alignment")
 AMPLITUDE_BASE_DIR = os.path.join(ROOT, "amplitude")
-ACCENT_BASE_DIR   = os.path.join(ROOT, "accent_classification")
+ACCENT_BASE_DIR          = os.path.join(ROOT, "accent_classification")
+AROUSAL_VALENCE_BASE_DIR = os.path.join(ROOT, "arousal_valence")
 
 # ── Model / weights paths ──────────────────────────────────────────────────────
 NISQA_REPO  = os.path.join(NISQA_BASE_DIR, "model")
@@ -82,6 +83,10 @@ CENTROID_TOLERANCE = 500     # Hz spectral centroid delta tolerance
 PEAK_LIMIT         = -1.0    # dBFS — TTS clipping threshold
 REF_LUFS_MIN       = -40.0   # below this = degraded reference
 REF_LUFS_MAX       = -5.0    # above this = degraded reference
+
+# ── Arousal / Valence thresholds ──────────────────────────────────────────────
+AROUSAL_DELTA_THRESHOLD = 0.15   # max |ref_arousal - out_arousal| — above = emotion intensity lost
+VALENCE_DELTA_THRESHOLD = 0.15   # max |ref_valence - out_valence| — above = tone polarity shifted
 
 # ── Accent thresholds ──────────────────────────────────────────────────────────
 ACCENT_TARGET           = "american"
