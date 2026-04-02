@@ -21,18 +21,17 @@ MODELS_DIR     = os.path.join(DATA_DIR, "models")
 REFERENCE_DIR  = os.path.join(DATA_DIR, "reference")
 ENROLLMENT_DIR = os.path.join(DATA_DIR, "enrollment")
 
-# ── WER gate paths (separate — uses text reference files, not audio) ───────────
-WER_BASE_DIR       = os.path.join(ROOT, "WER_PER_Production", "WER_TEST")
-TEXT_REFERENCE_DIR = os.path.join(WER_BASE_DIR, "references")
+# ── WER gate paths ─────────────────────────────────────────────────────────────
+TEXT_REFERENCE_DIR = os.path.join(DATA_DIR, "text_references")
 
 # ── Accent class reference clips (NOT per-segment — one clip per accent class) ─
-ACCENT_BASE_DIR = os.path.join(ROOT, "accent_classification")
+ACCENT_BASE_DIR = os.path.join(ROOT, "data")
 
 # ── Model / weights paths ──────────────────────────────────────────────────────
-NISQA_REPO   = os.path.join(ROOT, "NISQA_prod", "model")
+NISQA_REPO   = os.path.join(ROOT, "weights", "nisqa")
 NISQA_WEIGHT = os.path.join(NISQA_REPO, "weights", "nisqa.tar")
 
-UTMOS_MODEL_DIR = os.path.join(ROOT, "UTMOS", "model", "simple")
+UTMOS_MODEL_DIR = os.path.join(ROOT, "weights", "utmos", "simple")
 UTMOS_CKPT      = os.path.join(UTMOS_MODEL_DIR, "epoch=3-step=7459.ckpt")
 
 # ── Output directory ───────────────────────────────────────────────────────────
@@ -115,9 +114,9 @@ VALENCE_DELTA_THRESHOLD = 0.15   # max |ref_valence - out_valence| — above = t
 ACCENT_TARGET           = "american"
 ACCENT_TARGET_THRESHOLD = 0.75
 ACCENT_REFERENCES = {
-    "american": os.path.join(ACCENT_BASE_DIR, "reference", "american.wav"),
-    "british" : os.path.join(ACCENT_BASE_DIR, "reference", "british.wav"),
-    "indian"  : os.path.join(ACCENT_BASE_DIR, "reference", "indian.wav"),
+    "american": os.path.join(ACCENT_BASE_DIR, "accent_reference", "american.wav"),
+    "british" : os.path.join(ACCENT_BASE_DIR, "accent_reference", "british.wav"),
+    "indian"  : os.path.join(ACCENT_BASE_DIR, "accent_reference", "indian.wav"),
 }
 
 # ── Conda environment names ────────────────────────────────────────────────────

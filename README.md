@@ -59,66 +59,57 @@ Every gate expects the same layout inside its own base directory:
 
 ### Gate-specific paths (all rooted at `/Users/abey/Documents/tts_metrics/`)
 
-| Gate | Folder | Reference needed? | Notes |
-|---|---|---|---|
-| WER | `WER_PER_Production/WER_TEST/` | `.txt` per sample in `references/` | Text files, not audio |
-| NISQA | `NISQA_prod/` | Optional audio in `reference/` | Delta checks skipped if absent |
-| UTMOS | `UTMOS/` | None | Absolute scoring only |
-| Speaker Sim | `speaker_similarity/` | Audio in `reference/` and/or `enrollment/speaker.wav` | Falls back to enrollment if per-utterance ref missing |
-| SER | `SER/` | Required audio in `reference/` | Hindi reference audio |
-| Arousal/Valence | `arousal_valence/` | Optional audio in `reference/` | Dimensional emotion (arousal + valence) |
-| Pitch | `pitch/` | Optional audio in `reference/` | Absolute floor check always runs |
-| Duration | `duration_ratio/` | Required audio in `reference/` | |
-| VAD | `pause_alignment/` | Required audio in `reference/` | |
-| Amplitude | `amplitude/` | Required audio in `reference/` | |
-| Accent | `accent_classification/` | `reference/american.wav`, `reference/british.wav`, `reference/indian.wav` | Fixed accent reference clips |
+All audio gates share the unified `data/` folder. The only gate with a separate layout is WER (text references) and Accent (fixed reference clips in `data/accent_reference/`).
 
-### WER folder layout (different from others)
-```
-WER_PER_Production/WER_TEST/
-├── references/
-│   ├── sample_01.txt      ← plain text, one file per sample
-│   └── sample_02.txt
-└── models/
-    ├── model_1/
-    │   ├── sample_01.wav
-    │   └── sample_02.wav
-    └── model_2/
-        ├── sample_01.wav
-        └── sample_02.wav
-```
+| Gate | Audio source | Reference needed? | Notes |
+|---|---|---|---|
+| WER | `data/models/` | `.txt` per sample in `data/text_references/` | Text files, not audio |
+| NISQA | `data/models/` | Optional audio in `data/reference/` | Delta checks skipped if absent |
+| UTMOS | `data/models/` | None | Absolute scoring only |
+| Speaker Sim | `data/models/` | Audio in `data/reference/` and/or `data/enrollment/speaker.wav` | Falls back to enrollment if per-utterance ref missing |
+| SER | `data/models/` | Required audio in `data/reference/` | Hindi reference audio |
+| Arousal/Valence | `data/models/` | Optional audio in `data/reference/` | Dimensional emotion (arousal + valence) |
+| Pitch | `data/models/` | Optional audio in `data/reference/` | Absolute floor check always runs |
+| Duration | `data/models/` | Required audio in `data/reference/` | |
+| VAD | `data/models/` | Required audio in `data/reference/` | |
+| Amplitude | `data/models/` | Required audio in `data/reference/` | |
+| Accent | `data/models/` | Fixed clips in `data/accent_reference/` (american/british/indian) | Not per-segment — one clip per accent class |
+
+### WER text references
+
+Place one `.txt` file per sample in `data/text_references/`. The filename must match the `.wav` filename (e.g. `sample_01.txt` ↔ `sample_01.wav`). The WER gate reads audio from the same `data/models/` folder as all other gates.
 
 ### Model weights (not included in repo)
 
 | Gate | Weight location |
 |---|---|
-| NISQA | `NISQA_prod/model/weights/nisqa.tar` |
-| UTMOS | `UTMOS/model/simple/epoch=3-step=7459.ckpt` + `UTMOS/model/simple/wav2vec_small.pt` |
+| NISQA | `weights/nisqa/weights/nisqa.tar` |
+| UTMOS | `weights/utmos/simple/epoch=3-step=7459.ckpt` + `weights/utmos/simple/wav2vec_small.pt` |
 
 #### Download commands
 
 **NISQA** — clone the repo directly into the expected path:
 ```bash
-git clone https://github.com/gabrielmittag/NISQA.git NISQA_prod/model
+git clone https://github.com/gabrielmittag/NISQA.git weights/nisqa
 ```
 The weights file `weights/nisqa.tar` ships with the repo.
 
 **UTMOS** — download checkpoint and wav2vec backbone:
 ```bash
-mkdir -p UTMOS/model/simple
+mkdir -p weights/utmos/simple
 
 # UTMOS checkpoint (from the UTMOS GitHub release)
 curl -L "https://huggingface.co/spaces/sarulab-speech/UTMOS-demo/resolve/main/epoch%3D3-step%3D7459.ckpt" \
-     -o UTMOS/model/simple/epoch=3-step=7459.ckpt
+     -o weights/utmos/simple/epoch=3-step=7459.ckpt
 
 # wav2vec 2.0 small backbone (from Facebook Research)
 curl -L "https://dl.fbaipublicfiles.com/fairseq/wav2vec/wav2vec_small.pt" \
-     -o UTMOS/model/simple/wav2vec_small.pt
+     -o weights/utmos/simple/wav2vec_small.pt
 ```
 
 Also clone the UTMOS inference code:
 ```bash
-git clone https://github.com/sarulab-speech/UTMOS22.git UTMOS/model
+git clone https://github.com/sarulab-speech/UTMOS22.git weights/utmos
 ```
 
 ### Enrollment file (Speaker Similarity gate)
@@ -318,3 +309,53 @@ automatically split long audio into equal-length chunks and aggregate:
 | `CENTROID_TOLERANCE` | 500 Hz | Max spectral centroid delta |
 | `ACCENT_TARGET_THRESHOLD` | 0.75 | Min American accent proximity |
 | `MIN_SEGMENT_DURATION` | 2.0 s | Segments below this are flagged SHORT_SEGMENT |
+
+---
+
+## Language limitations
+
+This pipeline was built for **English TTS/STS output** evaluated against reference audio. Gates fall into three categories depending on whether the audio being tested is English or not.
+
+### Fully reliable for any language (signal processing only)
+
+| Gate | Why |
+|---|---|
+| Pitch | librosa pyin operates on the raw audio signal — no language assumption |
+| Duration | reads file header only |
+| VAD | amplitude-based silence detection via ffmpeg |
+| Amplitude | pyloudnorm + librosa spectral analysis — purely acoustic |
+
+### Unreliable for non-English audio
+
+| Gate | Problem | Detail |
+|---|---|---|
+| WER | English only | Whisper transcribes into whatever language it detects; text references are English. WER will be near 100% on Hindi audio. |
+| UTMOS | English only | Trained on English TTS naturalness ratings (LJSpeech-style MOS). Scores on non-English speech have no calibrated meaning. |
+| Accent | English only | Classifies English accent types (American / British / Indian-English). Hindi speech produces arbitrary similarity scores — results are meaningless. |
+| Arousal/Valence | English-biased | Fine-tuned on MSP-IMPROV and MSP-Podcast, which are English-only. Dimensional emotion predictions degrade noticeably on non-English prosody. |
+
+### Partially reliable for non-English audio
+
+| Gate | Reliability | Detail |
+|---|---|---|
+| NISQA | Mostly reliable | Acoustic dimensions (noisiness, discontinuity, coloration, loudness) are language-agnostic. Absolute MOS scores are calibrated on English data so exact values may be slightly biased, but relative comparisons between models remain valid. |
+| SER | Moderate | emotion2vec_plus_large was trained on multilingual data and handles several languages. Hindi is not a primary training language — emotion label accuracy will be lower than on English, but coarse emotion groupings (happy vs sad vs angry) remain usable. Treat NEAR_MISS results with extra skepticism. |
+| Speaker Sim | Reliable | ECAPA-TDNN on VoxCeleb captures voice identity independent of language content. Speaker similarity scores are valid across languages as long as the same speaker is compared. |
+
+### Summary table
+
+| Gate | English output | Hindi output | Cross-lingual ref→output |
+|---|---|---|---|
+| WER | ✅ | ❌ | ❌ |
+| NISQA | ✅ | ✅ (scores slightly biased) | ✅ |
+| UTMOS | ✅ | ❌ | — |
+| Speaker Sim | ✅ | ✅ | ✅ |
+| SER | ✅ | ⚠️ | ⚠️ |
+| Arousal/Valence | ✅ | ⚠️ | ⚠️ |
+| Pitch | ✅ | ✅ | ✅ |
+| Duration | ✅ | ✅ | ✅ |
+| VAD | ✅ | ✅ | ✅ |
+| Amplitude | ✅ | ✅ | ✅ |
+| Accent | ✅ (English accent check) | ❌ | ❌ |
+
+✅ reliable  ⚠️ use with caution  ❌ do not use

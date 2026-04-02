@@ -1,5 +1,0 @@
-Model,Sample,MOS,Noisiness,Discontinuity,Coloration,Loudness,ΔMOS,ΔNoisiness,ΔDiscontinuity,ΔColoration,ΔLoudness,Absolute,Final,Primary Failure,Flag,_is_clean
-m1,clean_baseline 2,4.29,4.415,4.285,4.009,4.289,0.0,0.0,0.0,0.0,0.0,✅,✅ PASS,—,—,True
-m1,clean_baseline,4.29,4.415,4.285,4.009,4.289,0.0,0.0,0.0,0.0,0.0,✅,✅ PASS,—,—,True
-m2,clean_baseline 2,4.29,4.415,4.285,4.009,4.289,0.0,0.0,0.0,0.0,0.0,✅,✅ PASS,—,—,True
-m2,clean_baseline,4.29,4.415,4.285,4.009,4.289,0.0,0.0,0.0,0.0,0.0,✅,✅ PASS,—,—,True
