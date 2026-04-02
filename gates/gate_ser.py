@@ -4,16 +4,23 @@ Env : base (python 3.13)
 Uses emotion2vec_plus_large to classify emotion in reference vs TTS audio.
 Pass = emotions match. Segments where reference confidence is low are flagged
 as degraded but still scored.
+
+Files longer than _SER_CHUNK_S seconds are automatically split into chunks.
+The final emotion label is chosen by majority vote across chunk labels;
+the reported confidence is the mean of each chunk's top-label confidence.
 """
 
 import os
 import sys
 import argparse
+import tempfile
 
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
+
+_SER_CHUNK_S = 30   # seconds per chunk
 
 
 # ── Model loading ──────────────────────────────────────────────────────────────
@@ -31,8 +38,9 @@ def load_model():
     return {"ser_model": ser_model}
 
 
-# ── Emotion extraction ─────────────────────────────────────────────────────────
-def get_emotion(audio_path, ser_model):
+# ── Emotion extraction (single file, raw) ─────────────────────────────────────
+def _get_emotion_raw(audio_path, ser_model):
+    """Run emotion2vec on one file. Returns (label, confidence) or (None, None)."""
     try:
         res = ser_model.generate(
             audio_path,
@@ -55,6 +63,85 @@ def get_emotion(audio_path, ser_model):
     except Exception as e:
         print(f"  emotion2vec error on {audio_path}: {e}")
         return None, None
+
+
+# ── Emotion extraction with automatic chunking ─────────────────────────────────
+def get_emotion(audio_path, ser_model):
+    """
+    Score one audio file with emotion2vec.
+
+    If the file is ≤ _SER_CHUNK_S seconds it is scored directly.
+    Longer files are split into _SER_CHUNK_S-second temp WAV clips and
+    scored individually. The final label is the majority vote across chunks;
+    the confidence is the mean of the winning label's per-chunk confidence.
+    Temp files are deleted immediately after scoring.
+    """
+    import soundfile as sf
+
+    data, sr = sf.read(audio_path, always_2d=False)
+    duration = len(data) / sr
+
+    if duration <= _SER_CHUNK_S:
+        return _get_emotion_raw(audio_path, ser_model)
+
+    import math
+    total_frames     = len(data)
+    max_chunk_frames = int(_SER_CHUNK_S * sr)
+    n_chunks         = math.ceil(total_frames / max_chunk_frames)
+    chunk_size       = total_frames / n_chunks   # equal-length, float → round at boundaries
+    print(f"  [SER] {duration:.1f}s → {n_chunks} equal chunks (~{duration/n_chunks:.1f}s each)")
+
+    chunk_labels = []
+    chunk_confs  = []
+
+    tmp_dir = tempfile.mkdtemp(prefix="ser_chunk_")
+    try:
+        for i in range(n_chunks):
+            start = round(i       * chunk_size)
+            end   = round((i + 1) * chunk_size)
+            chunk = data[start:end]
+
+            # Skip chunks shorter than 0.5 s
+            if (end - start) / sr < 0.5:
+                print(f"  [SER] chunk {i+1}/{n_chunks}: too short, skipping")
+                continue
+
+            tmp_path = os.path.join(tmp_dir, f"chunk_{i:04d}.wav")
+            sf.write(tmp_path, chunk, sr)
+
+            try:
+                label, conf = _get_emotion_raw(tmp_path, ser_model)
+                if label is not None:
+                    chunk_labels.append(label)
+                    chunk_confs.append(conf)
+                    print(f"  [SER] chunk {i+1}/{n_chunks}: {label} ({conf})")
+                else:
+                    print(f"  [SER] chunk {i+1}/{n_chunks}: no result")
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+    finally:
+        try:
+            os.rmdir(tmp_dir)
+        except OSError:
+            pass
+
+    if not chunk_labels:
+        return None, None
+
+    # Majority vote on label
+    from collections import Counter
+    vote_counts  = Counter(chunk_labels)
+    winner_label = vote_counts.most_common(1)[0][0]
+
+    # Mean confidence of the winning label's chunks
+    winner_confs = [c for lbl, c in zip(chunk_labels, chunk_confs) if lbl == winner_label]
+    mean_conf    = round(sum(winner_confs) / len(winner_confs), 4)
+
+    print(f"  [SER] vote result: {winner_label} ({vote_counts}) → {mean_conf} mean conf")
+    return winner_label, mean_conf
 
 
 # ── Main gate ──────────────────────────────────────────────────────────────────

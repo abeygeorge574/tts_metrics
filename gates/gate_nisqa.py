@@ -3,16 +3,22 @@ Gate: NISQA (MOS, Noisiness, Discontinuity, Coloration, Loudness)
 Env : base (python 3.13)
 Scores TTS audio with the NISQA model. Supports absolute thresholds
 and delta-vs-reference thresholds with hybrid pass/fail logic.
+
+Files longer than ~2.5 min are automatically chunked into 30 s clips,
+each clip is scored, and the five metrics are averaged across chunks.
 """
 
 import os
 import sys
 import argparse
+import tempfile
 
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
+
+_NISQA_CHUNK_S = 30   # seconds per chunk
 
 
 # ── Model loading ──────────────────────────────────────────────────────────────
@@ -34,8 +40,9 @@ def load_model():
     return {"nisqa_weight": NISQA_WEIGHT}
 
 
-# ── Score single file ──────────────────────────────────────────────────────────
-def score_single_file(audio_path, nisqa_weight):
+# ── Score single file (raw — no chunking) ─────────────────────────────────────
+def _score_file_raw(audio_path, nisqa_weight):
+    """Call NISQA directly on one file. Raises ValueError if file is too long."""
     from nisqa.NISQA_model import nisqaModel
 
     args = {
@@ -60,6 +67,79 @@ def score_single_file(audio_path, nisqa_weight):
         "Discontinuity": round(float(row["dis_pred"]),  3),
         "Coloration"   : round(float(row["col_pred"]),  3),
         "Loudness"     : round(float(row["loud_pred"]), 3),
+    }
+
+
+# ── Score with automatic chunking ─────────────────────────────────────────────
+def score_single_file(audio_path, nisqa_weight):
+    """
+    Score one audio file with NISQA.
+
+    If the file is ≤ _NISQA_CHUNK_S seconds it is scored directly.
+    Longer files are split into _NISQA_CHUNK_S-second temp WAV clips,
+    each clip is scored, and the five metrics are averaged across chunks.
+    Temp files are deleted immediately after scoring.
+    """
+    import soundfile as sf
+
+    # Fast path — try scoring as-is first
+    try:
+        return _score_file_raw(audio_path, nisqa_weight)
+    except ValueError as e:
+        if "max_length" not in str(e) and "n_wins" not in str(e):
+            raise
+        print(f"  [NISQA] File too long — chunking into {_NISQA_CHUNK_S}s clips …")
+
+    # Load full waveform for chunking
+    import math
+    data, sr = sf.read(audio_path, always_2d=False)
+    total_frames = len(data)
+    max_chunk_frames = int(_NISQA_CHUNK_S * sr)
+    n_chunks         = math.ceil(total_frames / max_chunk_frames)
+    chunk_size       = total_frames / n_chunks   # equal-length, float → round at boundaries
+    print(f"  [NISQA] {total_frames/sr:.1f}s → {n_chunks} equal chunks (~{total_frames/sr/n_chunks:.1f}s each)")
+
+    all_scores = []
+    tmp_dir = tempfile.mkdtemp(prefix="nisqa_chunk_")
+    try:
+        for i in range(n_chunks):
+            start = round(i       * chunk_size)
+            end   = round((i + 1) * chunk_size)
+            chunk = data[start:end]
+
+            # Skip chunks shorter than 0.5 s — NISQA can't handle them
+            if (end - start) / sr < 0.5:
+                print(f"  [NISQA] chunk {i+1}/{n_chunks}: too short, skipping")
+                continue
+
+            tmp_path = os.path.join(tmp_dir, f"chunk_{i:04d}.wav")
+            sf.write(tmp_path, chunk, sr)
+
+            try:
+                scores = _score_file_raw(tmp_path, nisqa_weight)
+                all_scores.append(scores)
+                print(f"  [NISQA] chunk {i+1}/{n_chunks}: MOS={scores['MOS']}")
+            except ValueError as e:
+                print(f"  [NISQA] chunk {i+1}/{n_chunks} still too long — skipping ({e})")
+            finally:
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+    finally:
+        try:
+            os.rmdir(tmp_dir)
+        except OSError:
+            pass
+
+    if not all_scores:
+        raise RuntimeError(f"NISQA: no usable chunks from {audio_path}")
+
+    # Average each metric across chunks
+    keys = all_scores[0].keys()
+    return {
+        k: round(sum(s[k] for s in all_scores) / len(all_scores), 3)
+        for k in keys
     }
 
 
@@ -146,20 +226,18 @@ def run_gate(model_state=None):
 
             try:
                 tts_scores = score_single_file(tts_path, nisqa_weight)
-            except ValueError as e:
-                if "max_length" in str(e) or "n_wins" in str(e):
-                    print(f"  SKIP: file too long for NISQA ({e})")
-                    results.append({
-                        "Model": model, "Sample": sample_name,
-                        "MOS": None, "Noisiness": None, "Discontinuity": None,
-                        "Coloration": None, "Loudness": None,
-                        "ΔMOS": None, "ΔNoisiness": None, "ΔDiscontinuity": None,
-                        "ΔColoration": None, "ΔLoudness": None,
-                        "Absolute": "SKIP", "Final": "SKIP",
-                        "Primary Failure": "TOO_LONG", "Flag": "TOO_LONG",
-                    })
-                    continue
-                raise
+            except Exception as e:
+                print(f"  SKIP: NISQA failed on {sample_name} ({e})")
+                results.append({
+                    "Model": model, "Sample": sample_name,
+                    "MOS": None, "Noisiness": None, "Discontinuity": None,
+                    "Coloration": None, "Loudness": None,
+                    "ΔMOS": None, "ΔNoisiness": None, "ΔDiscontinuity": None,
+                    "ΔColoration": None, "ΔLoudness": None,
+                    "Absolute": "SKIP", "Final": "SKIP",
+                    "Primary Failure": "ERROR", "Flag": "ERROR",
+                })
+                continue
 
             absolute_pass = get_absolute_pass(tts_scores)
             print(f"  TTS    → MOS: {tts_scores['MOS']} | Noi: {tts_scores['Noisiness']} | "
@@ -180,18 +258,15 @@ def run_gate(model_state=None):
                 else:
                     try:
                         ref_scores = score_single_file(ref_path, nisqa_weight)
-                    except ValueError as e:
-                        if "max_length" in str(e) or "n_wins" in str(e):
-                            print(f"  Reference too long for NISQA — falling back to absolute only")
-                            ref_flag = "REF_TOO_LONG"
-                            ref_scores = None
-                        else:
-                            raise
+                    except Exception as e:
+                        print(f"  Reference NISQA failed — falling back to absolute only ({e})")
+                        ref_flag   = "REF_ERROR"
+                        ref_scores = None
 
                     if ref_scores is not None:
-                        print(f"  REF    → MOS: {ref_scores['MOS']} | Noi: {ref_scores['Noisiness']} | "
-                              f"Dis: {ref_scores['Discontinuity']} | Col: {ref_scores['Coloration']} | "
-                              f"Lou: {ref_scores['Loudness']}")
+                        print(f"  REF    → MOS: {ref_scores['MOS']} | Noi: {ref_scores['Noisiness']} |"
+                              f" Dis: {ref_scores['Discontinuity']} | Col: {ref_scores['Coloration']} |"
+                              f" Lou: {ref_scores['Loudness']}")
 
                     if ref_scores is not None and ref_scores["MOS"] < 3.0:
                         ref_flag = "REF_QUALITY"

@@ -5,6 +5,10 @@ Uses wav2vec2-large-xlsr-53 to extract embeddings, then computes cosine
 similarity to accent reference embeddings (american / british / indian).
 Pass = target accent proximity >= threshold.
 Device priority: CUDA → MPS (Apple Silicon) → CPU.
+
+Long files are split into equal-length chunks (each ≤ 30 s) in memory.
+The embedding for each chunk is computed and the chunk embeddings are
+averaged before computing cosine similarity — no temp files needed.
 """
 
 import os
@@ -48,8 +52,22 @@ def load_model():
     return {"feature_extractor": feature_extractor, "wav2vec2": wav2vec2, "device": device}
 
 
+# wav2vec2 attention is O(n²) — cap chunk length to avoid OOM on long audio.
+_ACCENT_MAX_CHUNK_S = 30   # seconds per chunk
+_ACCENT_MIN_FRAMES  = 160  # minimum samples at 16 kHz (~0.01 s)
+
+
 # ── Embedding and similarity ───────────────────────────────────────────────────
 def get_accent_embedding(audio_path, feature_extractor, wav2vec2, device="cpu"):
+    """
+    Extract a wav2vec2 embedding for one audio file.
+
+    Long files are split into equal-length chunks (each ≤ 30 s) in memory.
+    The per-chunk embeddings are averaged to form a single file embedding —
+    no temp files needed.
+    """
+    import math
+
     wav, sr = torchaudio.load(audio_path)
 
     if wav.shape[0] > 1:
@@ -58,23 +76,50 @@ def get_accent_embedding(audio_path, feature_extractor, wav2vec2, device="cpu"):
     if sr != 16000:
         wav = torchaudio.transforms.Resample(sr, 16000)(wav)
 
-    if wav.shape[-1] < 160:
+    wav_1d = wav.squeeze()   # shape: (T,)
+
+    if wav_1d.shape[-1] < _ACCENT_MIN_FRAMES:
         raise ValueError(f"Audio too short: {audio_path}")
 
-    inputs = feature_extractor(
-        wav.squeeze().numpy(),
-        sampling_rate=16000,
-        return_tensors="pt",
-        padding=True,
-    )
-    # Move inputs to the same device as the model
-    inputs = {k: v.to(device) for k, v in inputs.items()}
+    total_frames     = wav_1d.shape[-1]
+    max_chunk_frames = int(_ACCENT_MAX_CHUNK_S * 16000)
 
-    with torch.no_grad():
-        outputs = wav2vec2(**inputs)
+    if total_frames <= max_chunk_frames:
+        chunks = [wav_1d]
+    else:
+        n_chunks   = math.ceil(total_frames / max_chunk_frames)
+        chunk_size = total_frames / n_chunks   # equal-length, float → round at boundaries
+        chunks = [
+            wav_1d[round(i * chunk_size) : round((i + 1) * chunk_size)]
+            for i in range(n_chunks)
+        ]
+        chunks = [c for c in chunks if c.shape[-1] >= _ACCENT_MIN_FRAMES]
+        if not chunks:
+            chunks = [wav_1d[:max_chunk_frames]]
 
-    embedding = outputs.last_hidden_state.mean(dim=1).squeeze()
-    return embedding
+    chunk_embeddings = []
+    for chunk in chunks:
+        inputs = feature_extractor(
+            chunk.numpy(),
+            sampling_rate=16000,
+            return_tensors="pt",
+            padding=True,
+        )
+        inputs = {k: v.to(device) for k, v in inputs.items()}
+
+        with torch.no_grad():
+            outputs = wav2vec2(**inputs)
+
+        emb = outputs.last_hidden_state.mean(dim=1).squeeze()
+        chunk_embeddings.append(emb)
+
+    if len(chunk_embeddings) == 1:
+        return chunk_embeddings[0]
+
+    # Average embeddings across chunks, then L2-normalise
+    stacked = torch.stack(chunk_embeddings, dim=0)   # (N, D)
+    mean_emb = stacked.mean(dim=0)                   # (D,)
+    return mean_emb
 
 
 def cosine_sim(emb1, emb2):

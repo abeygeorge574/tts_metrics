@@ -161,18 +161,20 @@ def load_model():
 
 
 # wav2vec2 attention is O(n²) — cap chunk length to avoid OOM on long audio.
-# Scores are averaged across chunks, which is a reasonable utterance-level estimate.
-_MAX_CHUNK_SAMPLES = 30 * 16000   # 30 seconds at 16 kHz
-_MIN_CHUNK_SAMPLES = 1  * 16000   # 1 second  — discard shorter tail chunks
+# Chunks are equal length (each ≤ max) so averaging isn't biased by a short tail.
+_MAX_CHUNK_SAMPLES = 30 * 16000   # each chunk ≤ 30 seconds at 16 kHz
+_MIN_CHUNK_SAMPLES = 1  * 16000   # discard chunks shorter than 1 second
 
 
 # ── Score a single audio file ──────────────────────────────────────────────────
 def _score(audio_path, processor, model, device):
     """Return (arousal, dominance, valence) floats in [0, 1].
 
-    Long audio is split into ≤30 s chunks and scores are averaged, preventing
-    the O(n²) attention allocation that causes OOM on MPS/GPU for long files.
+    Long audio is split into equal-length chunks (each ≤ 30 s) and scores
+    are averaged, preventing the O(n²) attention OOM on MPS/GPU.
     """
+    import math
+
     wav, sr = torchaudio.load(audio_path)
 
     if wav.shape[0] > 1:
@@ -181,13 +183,15 @@ def _score(audio_path, processor, model, device):
     if sr != 16000:
         wav = torchaudio.transforms.Resample(sr, 16000)(wav)
 
-    wav_np = wav.squeeze().numpy()
+    wav_np       = wav.squeeze().numpy()
+    total_samples = len(wav_np)
 
-    # Split into chunks; discard tail chunks that are too short to be reliable
-    if len(wav_np) > _MAX_CHUNK_SAMPLES:
+    if total_samples > _MAX_CHUNK_SAMPLES:
+        n_chunks   = math.ceil(total_samples / _MAX_CHUNK_SAMPLES)
+        chunk_size = total_samples / n_chunks   # float → round at boundaries
         chunks = [
-            wav_np[i : i + _MAX_CHUNK_SAMPLES]
-            for i in range(0, len(wav_np), _MAX_CHUNK_SAMPLES)
+            wav_np[round(i * chunk_size) : round((i + 1) * chunk_size)]
+            for i in range(n_chunks)
         ]
         chunks = [c for c in chunks if len(c) >= _MIN_CHUNK_SAMPLES]
         if not chunks:
