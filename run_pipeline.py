@@ -41,6 +41,40 @@ _console_handler.setFormatter(_formatter)
 _file_handler = logging.FileHandler(_LOG_FILE, encoding="utf-8")
 _file_handler.setFormatter(_formatter)
 
+# Filter to block known-noisy third-party messages regardless of which logger emits them.
+# setLevel() on named loggers doesn't work here because FunaASR/SpeechBrain emit via
+# the root logger or loggers not in their package namespace.
+_NOISE_PREFIXES = (
+    "init param, map:",          # FunaASR: ~200 lines per model load
+    "scope_map:",                # FunaASR
+    "excludes:",                 # FunaASR
+    "ckpt:",                     # FunaASR
+    "Loading pretrained params", # FunaASR
+    "Loading ckpt:",             # FunaASR
+    "download models from model hub",  # FunaASR
+    "Registered checkpoint ",    # SpeechBrain DEBUG
+    "Registered parameter transfer ",  # SpeechBrain DEBUG
+    "Set local path in self.paths",    # SpeechBrain DEBUG
+    "Fetching files for pretraining",  # SpeechBrain DEBUG
+    "Redirecting (loading from local", # SpeechBrain DEBUG
+    "Loaded categorical encoding",     # SpeechBrain DEBUG
+    "Loading pretrained files for",    # SpeechBrain INFO
+    "Fetch ",                    # SpeechBrain INFO: "Fetch hyperparams.yaml: Fetching from HF Hub..."
+    "SpeechBrain could not find",      # SpeechBrain WARNING: torchaudio backend
+    "Warning: You are sending unauthenticated",  # HuggingFace Hub WARNING
+    "HTTP Request:",             # httpx
+    "HTTP Response:",            # httpx
+)
+
+class _ThirdPartyFilter(logging.Filter):
+    def filter(self, record):
+        msg = record.getMessage()
+        return not any(msg.startswith(p) for p in _NOISE_PREFIXES)
+
+_noise_filter = _ThirdPartyFilter()
+_console_handler.addFilter(_noise_filter)
+_file_handler.addFilter(_noise_filter)
+
 logging.basicConfig(level=logging.INFO, handlers=[_console_handler, _file_handler])
 log = logging.getLogger("pipeline")
 log.info("Log file: %s", _LOG_FILE)
