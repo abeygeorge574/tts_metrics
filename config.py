@@ -73,6 +73,10 @@ SPEAKER_SIM_THRESHOLD = 0.75
 
 # ── SER thresholds ─────────────────────────────────────────────────────────────
 SER_CONFIDENCE_THRESHOLD = 0.5
+# A FAIL becomes NEAR_MISS if the confidence gap between top-1 and the reference
+# label (on the TTS side) OR between top-1 and top-2 (on the reference side) is
+# within this margin. Both checks use the same margin.
+SER_NEAR_MISS_MARGIN = 0.10
 
 # ── Pitch thresholds ───────────────────────────────────────────────────────────
 PITCH_MEDIAN_THRESHOLD    = 30.0   # Hz — max acceptable |ref_median - tts_median|

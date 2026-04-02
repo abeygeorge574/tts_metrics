@@ -22,13 +22,21 @@ import argparse
 import logging
 from datetime import datetime
 
-# ── Logging ────────────────────────────────────────────────────────────────────
-# Logs go to both terminal AND a timestamped file in output/logs/
-# e.g. output/logs/pipeline_2026-04-02_15-23-00.log
+# ── Run directory ──────────────────────────────────────────────────────────────
+# Each pipeline run gets its own timestamped folder under output/runs/.
+# All gate CSVs and the log file go inside that folder.
+# e.g. output/runs/2026-04-03_10-00-00/
+#        pipeline.log
+#        wer/
+#        nisqa/
+#        ...
 
-_LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output", "logs")
-os.makedirs(_LOG_DIR, exist_ok=True)
-_LOG_FILE = os.path.join(_LOG_DIR, f"pipeline_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.log")
+_RUN_ID  = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
+_RUN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output", "runs", _RUN_ID)
+os.makedirs(_RUN_DIR, exist_ok=True)
+
+# ── Logging ────────────────────────────────────────────────────────────────────
+_LOG_FILE = os.path.join(_RUN_DIR, "pipeline.log")
 
 _formatter = logging.Formatter(
     fmt="%(asctime)s  %(levelname)-8s  %(message)s",
@@ -235,15 +243,15 @@ def main():
     )
     parser.add_argument(
         "--output-dir",
-        default=config.OUTPUT_DIR,
-        help=f"Root output directory. Default: {config.OUTPUT_DIR}",
+        default=_RUN_DIR,
+        help="Output directory for this run. Default: output/runs/<timestamp>/",
     )
     args = parser.parse_args()
 
     gates_to_run = args.gates if args.gates else GATE_KEYS
     gates_to_run = [g for g in gates_to_run if g not in (args.skip or [])]
 
-    log.info("Pipeline starting.")
+    log.info("Pipeline starting.  Run ID: %s", _RUN_ID)
     log.info("Gates     : %s", gates_to_run)
     log.info("Output dir: %s", args.output_dir)
     os.makedirs(args.output_dir, exist_ok=True)
@@ -278,6 +286,7 @@ def main():
     else:
         log.info("All gates completed successfully.")
         log.info("Results in: %s", args.output_dir)
+        log.info("Run ID    : %s", _RUN_ID)
 
 
 if __name__ == "__main__":
