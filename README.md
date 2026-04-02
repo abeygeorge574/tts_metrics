@@ -1,8 +1,9 @@
 # TTS Evaluation Pipeline
 
-Automated quality-gate pipeline for Hindi-English dubbing TTS evaluation.
-Runs 10 objective metrics across any number of TTS models and produces
-per-segment and per-model summary CSVs.
+Automated quality-gate pipeline for Hindi-English dubbing TTS/STS evaluation.
+Runs 11 objective metrics across any number of TTS models and produces
+per-segment and per-model summary CSVs, plus a visual HTML-style report
+(radar chart + heatmap) and an optional Gemini LLM quality summary.
 
 ---
 
@@ -10,7 +11,7 @@ per-segment and per-model summary CSVs.
 
 Two conda environments are required.
 
-### 1. base (Python 3.13) — most gates
+### 1. base (Python 3.13) — most gates + report generation
 ```bash
 conda env create -f environment_base.yml
 ```
@@ -22,6 +23,14 @@ conda env create -f environment_utmos.yml
 
 > **Always run `run_pipeline.py` from the `base` env.**
 > The three utmos-env gates are automatically subprocessed into the `utmos` env.
+
+### Optional: Gemini LLM report
+```bash
+pip install google-genai        # in base env
+export GEMINI_API_KEY="your_key_here"   # or add to ~/.zshrc / ~/.bashrc
+```
+Set the environment variable before running the pipeline. The LLM report
+is silently skipped if the key is not set.
 
 ---
 
@@ -57,6 +66,7 @@ Every gate expects the same layout inside its own base directory:
 | UTMOS | `UTMOS/` | None | Absolute scoring only |
 | Speaker Sim | `speaker_similarity/` | Audio in `reference/` and/or `enrollment/speaker.wav` | Falls back to enrollment if per-utterance ref missing |
 | SER | `SER/` | Required audio in `reference/` | Hindi reference audio |
+| Arousal/Valence | `arousal_valence/` | Optional audio in `reference/` | Dimensional emotion (arousal + valence) |
 | Pitch | `pitch/` | Optional audio in `reference/` | Absolute floor check always runs |
 | Duration | `duration_ratio/` | Required audio in `reference/` | |
 | VAD | `pause_alignment/` | Required audio in `reference/` | |
@@ -149,6 +159,7 @@ CUDA (NVIDIA GPU)  →  MPS (Apple Silicon)  →  CPU
 | UTMOS | Yes | CUDA or MPS picked up automatically |
 | Speaker Sim | Yes | ECAPA-TDNN moves to detected device |
 | SER | CPU only | emotion2vec runs on CPU |
+| Arousal/Valence | Yes | wav2vec2-large-robust on detected device |
 | Pitch | CPU only | librosa/pyin — no GPU path |
 | Duration | CPU only | header read only |
 | VAD | CPU only | ffmpeg + scipy |
@@ -177,7 +188,7 @@ python run_pipeline.py --gates wer utmos accent
 # Skip a gate
 python run_pipeline.py --skip nisqa
 
-# Custom output directory
+# Custom output directory (disables auto-timestamping)
 python run_pipeline.py --output-dir /path/to/results
 ```
 
@@ -186,15 +197,45 @@ Each gate can also be run standalone:
 python gates/gate_pitch.py --output-dir output/pitch
 ```
 
+Report generation can also be triggered standalone on any completed run:
+```bash
+python generate_report.py --run-dir output/runs/2026-04-03_10-00-00/
+```
+
 ---
 
 ## Output
 
-Results are written to `output/<gate>/`:
+Each run creates a timestamped folder under `output/runs/`:
+
+```
+output/
+└── runs/
+    └── 2026-04-03_10-00-00/      ← one folder per run
+        ├── pipeline.log          ← full run log
+        ├── radar.png             ← per-model gate pass-rate radar chart
+        ├── heatmap.png           ← segment × gate PASS/FAIL heatmap
+        ├── llm_report.txt        ← Gemini quality summary (if API key set)
+        ├── wer/
+        │   ├── per_segment_results.csv
+        │   └── model_summary.csv
+        ├── nisqa/
+        ├── utmos/
+        ├── speaker_sim/
+        ├── ser/
+        ├── arousal_valence/
+        ├── pitch/
+        ├── duration/
+        ├── vad/
+        ├── amplitude/
+        └── accent/
+```
+
+Each gate folder contains:
 
 | File | Contents |
 |---|---|
-| `per_segment_results.csv` | One row per model × sample with all scores and pass/fail flags |
+| `per_segment_results.csv` | One row per model × sample with all scores and PASS/NEAR_MISS/FAIL flags |
 | `model_summary.csv` | One row per model with aggregated pass rates and key metrics |
 
 ---
@@ -207,11 +248,73 @@ Results are written to `output/<gate>/`:
 | `gate_nisqa` | base | NISQA MOS, Noisiness, Discontinuity, Coloration, Loudness | MOS ≥ 3.0, ΔMOS ≥ −0.5 |
 | `gate_utmos` | utmos | UTMOS naturalness (1–5 scale) | ≥ 3.0 |
 | `gate_speaker_sim` | base | ECAPA-TDNN cosine speaker similarity | ≥ 0.75 |
-| `gate_ser` | base | emotion2vec emotion match vs reference | Label must match |
-| `gate_pitch` | base | Pitch register + expressiveness (librosa pyin) | Median Δ ≤ 30 Hz, Std ≥ 20 Hz, Std ratio ≥ 0.5× ref |
+| `gate_ser` | base | emotion2vec emotion match vs reference (see near-miss below) | Label must match; near-miss within 10% confidence gap |
+| `gate_arousal_valence` | base | Dimensional emotion: arousal + valence delta vs reference | Δ arousal ≤ 0.15, Δ valence ≤ 0.15 |
+| `gate_pitch` | base | Pitch register + expressiveness (librosa pyin, 16 kHz) | Median Δ ≤ 30 Hz, Std ≥ 20 Hz, Std ratio ≥ 0.5× ref |
 | `gate_duration` | base | TTS/reference duration ratio | Within ±10% |
 | `gate_vad` | base | Pause count, position, duration (Hungarian matching) | Count Δ ≤ 20, Pos ≤ 0.5 s, Dur ratio 0.75–1.25 |
 | `gate_amplitude` | base | LUFS, LRA, spectral centroid, true peak | LUFS Δ ≤ 4, LRA Δ ≤ 3, Centroid Δ ≤ 500 Hz, Peak < −1 dBFS |
 | `gate_accent` | utmos | wav2vec2 accent proximity (American target) | Proximity ≥ 0.75 |
 
 All thresholds are in `config.py` and can be adjusted without touching gate code.
+
+### SER near-miss detection
+
+The SER gate uses a three-way classification for each segment:
+
+| Status | Meaning |
+|---|---|
+| `PASS` | TTS emotion label matches reference label |
+| `NEAR_MISS` | Labels differ, but the model was uncertain: either the reference label appeared as the TTS runner-up within 10% of the winning confidence, or the reference distribution itself was close (top-1 vs top-2 within 10%) |
+| `FAIL` | Labels differ with a clear confidence gap — unambiguous mismatch |
+
+The model summary shows `Clean Pass Rate`, `Clean Near Miss`, and `Clean Fail Rate` separately.
+The near-miss margin is controlled by `SER_NEAR_MISS_MARGIN = 0.10` in `config.py`.
+
+### Short segment handling
+
+Segments shorter than `MIN_SEGMENT_DURATION` (default 2.0 s) in `config.py` are:
+- Still scored normally — the metric value is real
+- Flagged as `SHORT_SEGMENT` in the `Flag` column
+- Counted as degraded in the pass-rate calculation
+
+This is relevant for fast-switching dialogue lines.
+
+### Long segment chunking
+
+Gates that run neural models with memory or training-distribution constraints
+automatically split long audio into equal-length chunks and aggregate:
+
+| Gate | Max chunk | Aggregation |
+|---|---|---|
+| NISQA | 15 s | Mean of all 5 NISQA metrics across chunks |
+| SER | 15 s | Majority vote on label; mean confidence of winning chunks |
+| UTMOS | 10 s | Mean UTMOS score across chunks |
+| Arousal/Valence | 15 s | Mean arousal/valence across chunks |
+| Accent | 30 s | Mean cosine similarity per chunk against reference embedding |
+
+---
+
+## Configuration reference (`config.py`)
+
+| Key | Default | Description |
+|---|---|---|
+| `WER_THRESHOLD` | 0.10 | Max acceptable word error rate |
+| `INTEL_THRESHOLD` | 0.85 | Min fraction of high-confidence words |
+| `NISQA_THRESHOLDS["MOS"]` | 3.0 | Min absolute NISQA MOS |
+| `NISQA_DELTA_THRESHOLDS["MOS"]` | −0.5 | Max MOS drop vs reference |
+| `UTMOS_THRESHOLD` | 3.0 | Min UTMOS score |
+| `SPEAKER_SIM_THRESHOLD` | 0.75 | Min cosine similarity to reference speaker |
+| `SER_CONFIDENCE_THRESHOLD` | 0.5 | Min reference confidence to use as ground truth |
+| `SER_NEAR_MISS_MARGIN` | 0.10 | Confidence gap within which a FAIL becomes NEAR_MISS |
+| `AROUSAL_DELTA_THRESHOLD` | 0.15 | Max arousal delta vs reference |
+| `VALENCE_DELTA_THRESHOLD` | 0.15 | Max valence delta vs reference |
+| `PITCH_MEDIAN_THRESHOLD` | 30.0 Hz | Max pitch median delta |
+| `PITCH_STD_ABS_THRESHOLD` | 20.0 Hz | Min TTS pitch std (expressiveness floor) |
+| `PITCH_STD_RATIO_THRESHOLD` | 0.5 | TTS std must be ≥ 0.5× reference std |
+| `DURATION_TOLERANCE` | 0.10 | ±10% duration ratio tolerance |
+| `LUFS_TOLERANCE` | 4.0 | Max LUFS delta |
+| `LRA_TOLERANCE` | 3.0 | Max LRA delta |
+| `CENTROID_TOLERANCE` | 500 Hz | Max spectral centroid delta |
+| `ACCENT_TARGET_THRESHOLD` | 0.75 | Min American accent proximity |
+| `MIN_SEGMENT_DURATION` | 2.0 s | Segments below this are flagged SHORT_SEGMENT |

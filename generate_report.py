@@ -1,30 +1,37 @@
 """
-generate_report.py — post-run visualizations and optional LLM summary.
+generate_report.py — post-run visualizations and optional Gemini LLM summary.
 
 Called automatically by run_pipeline.py after all gates complete.
 Can also be run standalone:
   python generate_report.py --run-dir output/runs/2026-04-03_10-00-00/
 
-Outputs (written to <run-dir>/):
-  radar.png       — per-model pass rate radar across all gates
-  heatmap.png     — segment × gate pass/fail heatmap per model
-  llm_report.txt  — Gemini summary (only if GEMINI_API_KEY is set)
+Outputs written to <run-dir>/:
+  radar.png       — per-model pass-rate radar across all gates
+  heatmap.png     — segment × gate PASS/FAIL heatmap (all models)
+  llm_report.txt  — Gemini quality summary (requires GEMINI_API_KEY env var)
+
+Dependencies (base env):
+  matplotlib, numpy, pandas, google-genai (pip install google-genai)
 """
 
 import os
 import sys
+import logging
 import argparse
 
 import pandas as pd
 import numpy as np
 import matplotlib
-matplotlib.use("Agg")
+matplotlib.use("Agg")   # non-interactive — safe for subprocess / server use
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
+import matplotlib.colors as mcolors
+
+log = logging.getLogger("pipeline")
 
 # ── Gate config ────────────────────────────────────────────────────────────────
-# Maps gate_key → column name in per_segment_results.csv that holds pass/fail
-_PASS_COL = {
+# Which column in each gate's per_segment_results.csv carries the pass/fail value
+_PASS_COL: dict[str, str] = {
     "wer":             "Both_Pass",
     "nisqa":           "Final",
     "utmos":           "Pass",
@@ -38,22 +45,51 @@ _PASS_COL = {
     "accent":          "Final Pass",
 }
 
-GATE_ORDER = list(_PASS_COL.keys())
+GATE_ORDER: list[str] = list(_PASS_COL.keys())
 
-# Numeric encoding for heatmap cells
-_ENC = {"PASS": 3, "NEAR_MISS": 2, "FAIL": 1, "SKIP": 0}
-_COLORS = {
-    3: "#4caf50",   # green  — PASS
-    2: "#ff9800",   # orange — NEAR_MISS
-    1: "#f44336",   # red    — FAIL
+# Display labels for gate axes (shorter for radar readability)
+_GATE_LABEL: dict[str, str] = {
+    "wer":             "WER",
+    "nisqa":           "NISQA",
+    "utmos":           "UTMOS",
+    "speaker_sim":     "SPK SIM",
+    "ser":             "SER",
+    "arousal_valence": "ARO/VAL",
+    "pitch":           "PITCH",
+    "duration":        "DURATION",
+    "vad":             "VAD",
+    "amplitude":       "AMP",
+    "accent":          "ACCENT",
+}
+
+# Status → integer encoding for heatmap
+_STATUS_ENC: dict[str, int] = {
+    "PASS":      3,
+    "NEAR_MISS": 2,
+    "FAIL":      1,
+    "SKIP":      0,
+}
+
+# Status → fill colour (hex)
+_STATUS_COLOR: dict[int, str] = {
+    3: "#43a047",   # green  — PASS
+    2: "#fb8c00",   # orange — NEAR_MISS
+    1: "#e53935",   # red    — FAIL
     0: "#9e9e9e",   # grey   — SKIP / ERROR / missing
 }
-_LABELS = {3: "PASS", 2: "NEAR MISS", 1: "FAIL", 0: "SKIP/ERROR"}
+
+# Short single-character annotation printed inside each cell
+_STATUS_ANN: dict[str, str] = {
+    "PASS":      "✓",
+    "NEAR_MISS": "~",
+    "FAIL":      "✗",
+    "SKIP":      "—",
+}
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
-def _normalise_pass(val):
-    """Convert any gate's pass-column value to PASS / NEAR_MISS / FAIL / SKIP."""
+def _normalise_status(val) -> str:
+    """Map any gate pass-column value to one of PASS / NEAR_MISS / FAIL / SKIP."""
     if pd.isna(val):
         return "SKIP"
     s = str(val).strip().upper()
@@ -66,328 +102,413 @@ def _normalise_pass(val):
     return "SKIP"
 
 
-def _load_gate(run_dir, gate_key):
+def _load_gate(run_dir: str, gate_key: str) -> pd.DataFrame | None:
     """
     Load per_segment_results.csv for one gate.
-    Returns a DataFrame with columns [Model, Sample, Status] or None if missing.
+    Returns a DataFrame with columns [Model, Sample, Status] or None if unavailable.
     """
     path = os.path.join(run_dir, gate_key, "per_segment_results.csv")
     if not os.path.exists(path):
         return None
 
-    df = pd.read_csv(path)
-
-    pass_col = _PASS_COL.get(gate_key)
-    if pass_col is None or pass_col not in df.columns:
+    try:
+        df = pd.read_csv(path)
+    except Exception as e:
+        log.warning("[report] Could not read %s: %s", path, e)
         return None
 
-    df["Status"] = df[pass_col].apply(_normalise_pass)
-    return df[["Model", "Sample", "Status"]].copy()
+    pass_col = _PASS_COL.get(gate_key)
+    if not pass_col or pass_col not in df.columns:
+        log.warning("[report] Pass column '%s' not found in %s — skipping gate", pass_col, path)
+        return None
+
+    if "Model" not in df.columns or "Sample" not in df.columns:
+        log.warning("[report] Model/Sample columns missing in %s — skipping gate", path)
+        return None
+
+    df = df[["Model", "Sample", pass_col]].copy()
+    df["Status"] = df[pass_col].apply(_normalise_status)
+    return df[["Model", "Sample", "Status"]]
 
 
-def _build_matrix(run_dir):
+def _build_matrix(run_dir: str):
     """
+    Build a per-model status matrix from all available gates.
+
     Returns:
-      matrix  — dict[model] → DataFrame(index=sample, columns=gate)  values=status string
-      models  — list of model names
-      samples — list of sample names
-      gates   — list of gate keys that had data
+        matrix  — dict[model_name] → DataFrame(index=sample, columns=gate_key)
+        models  — sorted list of model names
+        samples — sorted list of sample names
+        gates   — list of gate keys that had data, in GATE_ORDER
     """
-    gates_with_data = []
-    gate_frames = {}
+    gates_available = []
+    gate_frames: dict[str, pd.DataFrame] = {}
 
     for gate in GATE_ORDER:
         df = _load_gate(run_dir, gate)
         if df is not None:
-            gates_with_data.append(gate)
+            gates_available.append(gate)
             gate_frames[gate] = df
 
-    if not gates_with_data:
-        return None, [], [], []
+    if not gates_available:
+        return {}, [], [], []
 
-    # Collect all models and samples
-    all_models  = sorted({row for df in gate_frames.values() for row in df["Model"].unique()})
-    all_samples = sorted({row for df in gate_frames.values() for row in df["Sample"].unique()})
+    all_models  = sorted({m for df in gate_frames.values() for m in df["Model"].unique()})
+    all_samples = sorted({s for df in gate_frames.values() for s in df["Sample"].unique()})
 
-    matrix = {}
+    matrix: dict[str, pd.DataFrame] = {}
     for model in all_models:
-        rows = {}
+        rows: dict[str, dict[str, str]] = {}
         for sample in all_samples:
-            row = {}
-            for gate in gates_with_data:
+            row: dict[str, str] = {}
+            for gate in gates_available:
                 df = gate_frames[gate]
                 match = df[(df["Model"] == model) & (df["Sample"] == sample)]
                 row[gate] = match["Status"].iloc[0] if len(match) == 1 else "SKIP"
             rows[sample] = row
-        matrix[model] = pd.DataFrame(rows).T   # index=sample, columns=gate
+        matrix[model] = pd.DataFrame.from_dict(rows, orient="index")  # index=sample, cols=gate
 
-    return matrix, all_models, all_samples, gates_with_data
+    return matrix, all_models, all_samples, gates_available
 
 
 # ── Radar chart ────────────────────────────────────────────────────────────────
-def make_radar(run_dir, matrix, models, gates):
-    """One polygon per model. Axis = gate. Value = PASS rate (0–1)."""
-    if not matrix or not models or not gates:
-        return
+def _make_radar(run_dir: str, matrix: dict, models: list, gates: list) -> None:
+    """
+    Polar chart with one axis per gate and one polygon per model.
+    Y-axis value = fraction of non-SKIP segments that passed.
+    """
+    n = len(gates)
+    angles = np.linspace(0, 2 * np.pi, n, endpoint=False).tolist()
+    angles_closed = angles + angles[:1]
 
-    n_gates = len(gates)
-    angles  = np.linspace(0, 2 * np.pi, n_gates, endpoint=False).tolist()
-    angles += angles[:1]   # close the polygon
+    fig, ax = plt.subplots(figsize=(9, 9), subplot_kw={"polar": True})
+    fig.patch.set_facecolor("#fafafa")
 
-    fig, ax = plt.subplots(figsize=(8, 8), subplot_kw={"polar": True})
-
-    cmap   = plt.cm.get_cmap("tab10", len(models))
-    legend = []
+    cmap = matplotlib.colormaps["tab10"].resampled(max(len(models), 1))
 
     for idx, model in enumerate(models):
-        df    = matrix[model]
-        rates = []
+        df = matrix[model]
+        rates: list[float] = []
         for gate in gates:
             if gate not in df.columns:
                 rates.append(0.0)
                 continue
-            statuses = df[gate]
-            total    = len(statuses[statuses != "SKIP"])
-            passes   = (statuses == "PASS").sum()
+            col    = df[gate]
+            total  = (col != "SKIP").sum()
+            passes = (col == "PASS").sum()
             rates.append(passes / total if total > 0 else 0.0)
 
-        rates += rates[:1]   # close the polygon
+        values = rates + rates[:1]
         color  = cmap(idx)
-        ax.plot(angles, rates, "o-", linewidth=2, color=color, label=model)
-        ax.fill(angles, rates, alpha=0.12, color=color)
-        legend.append(model)
+        ax.plot(angles_closed, values, "o-", linewidth=2.2, color=color, label=model)
+        ax.fill(angles_closed, values, alpha=0.10, color=color)
 
-    ax.set_xticks(angles[:-1])
-    ax.set_xticklabels(
-        [g.upper().replace("_", "\n") for g in gates],
-        size=9
-    )
+    ax.set_xticks(angles)
+    ax.set_xticklabels([_GATE_LABEL.get(g, g) for g in gates], fontsize=10, fontweight="bold")
     ax.set_ylim(0, 1)
-    ax.set_yticks([0.25, 0.5, 0.75, 1.0])
-    ax.set_yticklabels(["25%", "50%", "75%", "100%"], size=7, color="grey")
-    ax.yaxis.set_tick_params(pad=18)
-    ax.set_title("Gate Pass Rate by Model", size=14, pad=20, fontweight="bold")
-    ax.legend(loc="upper right", bbox_to_anchor=(1.35, 1.1), fontsize=10)
+    ax.set_yticks([0.25, 0.50, 0.75, 1.00])
+    ax.set_yticklabels(["25 %", "50 %", "75 %", "100 %"], fontsize=7.5, color="#555")
+    ax.yaxis.set_tick_params(pad=20)
+    ax.set_title("Gate Pass Rate by Model", fontsize=15, fontweight="bold", pad=25)
+    ax.legend(
+        loc="upper right",
+        bbox_to_anchor=(1.40, 1.15),
+        fontsize=11,
+        framealpha=0.85,
+    )
+    ax.grid(color="#ccc", linewidth=0.8)
 
     out = os.path.join(run_dir, "radar.png")
-    plt.tight_layout()
-    fig.savefig(out, dpi=150, bbox_inches="tight")
+    fig.savefig(out, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
-    print(f"[report] Radar chart → {out}")
+    log.info("[report] Radar chart  → %s", out)
 
 
 # ── Heatmap ────────────────────────────────────────────────────────────────────
-def make_heatmap(run_dir, matrix, models, samples, gates):
-    """One heatmap combining all models. Rows = model+sample, columns = gate."""
-    if not matrix or not models or not gates:
-        return
+def _make_heatmap(run_dir: str, matrix: dict, models: list, samples: list, gates: list) -> None:
+    """
+    Grid chart: rows = (model, sample), columns = gate.
+    Cells are coloured by status; short annotation printed inside.
+    Models are visually separated by a white divider row.
+    """
+    # Build row list with optional divider rows between models
+    row_data: list[dict | None] = []   # None = divider row
+    row_labels: list[str]       = []
 
-    n_rows = len(models) * len(samples)
-    n_cols = len(gates)
-
-    row_labels = []
-    data_enc   = []
-    data_str   = []
-
-    for model in models:
+    for midx, model in enumerate(models):
+        if midx > 0:
+            row_data.append(None)
+            row_labels.append("")
         df = matrix[model]
         for sample in samples:
-            row_labels.append(f"{model} / {sample}")
-            enc_row = []
-            str_row = []
+            row: dict[str, str] = {}
             for gate in gates:
                 if gate not in df.columns or sample not in df.index:
-                    enc_row.append(0)
-                    str_row.append("—")
+                    row[gate] = "SKIP"
                 else:
-                    status = df.loc[sample, gate]
-                    enc_row.append(_ENC.get(status, 0))
-                    str_row.append(status[:1] if status != "NEAR_MISS" else "N")
-            data_enc.append(enc_row)
-            data_str.append(str_row)
+                    row[gate] = df.loc[sample, gate]
+            row_data.append(row)
+            row_labels.append(f"{model}  /  {sample}")
 
-    arr = np.array(data_enc, dtype=float)
+    n_rows = len(row_data)
+    n_cols = len(gates)
 
-    fig_h = max(4, n_rows * 0.45 + 2)
-    fig_w = max(6, n_cols * 0.9 + 3)
+    cell_h = 0.50   # inches per data row
+    cell_w = 0.90   # inches per gate column
+    fig_h  = max(4.0, n_rows * cell_h + 2.5)
+    fig_w  = max(6.0, n_cols * cell_w + 3.5)
+
     fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+    fig.patch.set_facecolor("#fafafa")
+    ax.set_facecolor("#fafafa")
 
-    # Draw coloured cells
-    for r in range(n_rows):
-        for c in range(n_cols):
-            val   = int(arr[r, c])
-            color = _COLORS.get(val, _COLORS[0])
-            rect  = mpatches.FancyBboxPatch(
-                (c - 0.48, r - 0.48), 0.96, 0.96,
-                boxstyle="round,pad=0.02",
-                linewidth=0, facecolor=color, zorder=2
+    for r, row in enumerate(row_data):
+        if row is None:
+            # Divider row — draw a thick horizontal line
+            ax.axhline(r, color="white", linewidth=4, zorder=5)
+            continue
+        for c, gate in enumerate(gates):
+            status = row.get(gate, "SKIP")
+            enc    = _STATUS_ENC.get(status, 0)
+            color  = _STATUS_COLOR[enc]
+            ann    = _STATUS_ANN.get(status, "?")
+
+            rect = mpatches.FancyBboxPatch(
+                (c - 0.46, r - 0.42), 0.92, 0.84,
+                boxstyle="round,pad=0.04",
+                linewidth=0,
+                facecolor=color,
+                zorder=2,
             )
             ax.add_patch(rect)
-            label = data_str[r][c]
-            ax.text(c, r, label, ha="center", va="center",
-                    fontsize=7, color="white", fontweight="bold", zorder=3)
+            ax.text(
+                c, r, ann,
+                ha="center", va="center",
+                fontsize=9, color="white", fontweight="bold",
+                zorder=3,
+            )
 
     ax.set_xlim(-0.6, n_cols - 0.4)
-    ax.set_ylim(-0.6, n_rows - 0.4)
+    ax.set_ylim(-0.7, n_rows - 0.3)
+
     ax.set_xticks(range(n_cols))
     ax.set_xticklabels(
-        [g.upper().replace("_", "\n") for g in gates],
-        fontsize=8, rotation=0
+        [_GATE_LABEL.get(g, g) for g in gates],
+        fontsize=9, fontweight="bold",
     )
-    ax.set_yticks(range(n_rows))
-    ax.set_yticklabels(row_labels, fontsize=8)
     ax.xaxis.tick_top()
     ax.xaxis.set_label_position("top")
+
+    ax.set_yticks([i for i, r in enumerate(row_data) if r is not None])
+    ax.set_yticklabels(
+        [lbl for lbl in row_labels if lbl],
+        fontsize=8.5,
+    )
     ax.invert_yaxis()
-    ax.set_title("Segment × Gate Pass/Fail Heatmap", size=13, pad=30, fontweight="bold")
+    ax.tick_params(axis="both", length=0)
+    for spine in ax.spines.values():
+        spine.set_visible(False)
 
-    # Separator lines between models
-    for i, model in enumerate(models[:-1]):
-        y = (i + 1) * len(samples) - 0.5
-        ax.axhline(y, color="white", linewidth=2.5, zorder=4)
+    ax.set_title("Segment × Gate Pass / Fail Heatmap", fontsize=13, fontweight="bold", pad=35)
 
-    # Legend
     patches = [
-        mpatches.Patch(color=_COLORS[3], label="PASS"),
-        mpatches.Patch(color=_COLORS[2], label="NEAR MISS (N)"),
-        mpatches.Patch(color=_COLORS[1], label="FAIL"),
-        mpatches.Patch(color=_COLORS[0], label="SKIP / ERROR"),
+        mpatches.Patch(color=_STATUS_COLOR[3], label="PASS (✓)"),
+        mpatches.Patch(color=_STATUS_COLOR[2], label="NEAR MISS (~)"),
+        mpatches.Patch(color=_STATUS_COLOR[1], label="FAIL (✗)"),
+        mpatches.Patch(color=_STATUS_COLOR[0], label="SKIP / ERROR (—)"),
     ]
-    ax.legend(handles=patches, loc="lower right",
-              bbox_to_anchor=(1.0, -0.12), ncol=4, fontsize=8)
+    ax.legend(
+        handles=patches,
+        loc="lower center",
+        bbox_to_anchor=(0.5, -0.06),
+        ncol=4,
+        fontsize=8.5,
+        framealpha=0.9,
+    )
 
-    ax.set_aspect("equal")
     out = os.path.join(run_dir, "heatmap.png")
-    plt.tight_layout()
-    fig.savefig(out, dpi=150, bbox_inches="tight")
+    fig.savefig(out, dpi=150, bbox_inches="tight", facecolor=fig.get_facecolor())
     plt.close(fig)
-    print(f"[report] Heatmap → {out}")
+    log.info("[report] Heatmap       → %s", out)
 
 
 # ── LLM summary ────────────────────────────────────────────────────────────────
-def make_llm_report(run_dir, matrix, models, gates):
-    """Call Gemini to produce a plain-text quality report. Skips if no API key."""
+def _make_llm_report(run_dir: str, matrix: dict, models: list, gates: list) -> None:
+    """
+    Call Gemini to produce a plain-text quality assessment.
+    Silently skips if GEMINI_API_KEY is not set or google-genai is not installed.
+    """
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
     if not api_key:
-        print("[report] GEMINI_API_KEY not set — skipping LLM report")
+        log.info("[report] GEMINI_API_KEY not set — skipping LLM report")
         return
 
     try:
-        import google.generativeai as genai
+        from google import genai as _genai
     except ImportError:
-        print("[report] google-generativeai not installed — skipping LLM report")
+        log.warning("[report] google-genai not installed — run: pip install google-genai")
         return
 
-    genai.configure(api_key=api_key)
-
-    # Build structured summary
-    lines = [
-        "TTS/STS Audio Quality Evaluation",
-        f"Run dir: {run_dir}",
-        f"Models:  {', '.join(models)}",
-        f"Gates:   {', '.join(gates)}",
+    # ── Build prompt ───────────────────────────────────────────────────────────
+    lines: list[str] = [
+        "You are a TTS quality analyst reviewing dubbing quality metrics.",
+        "Below is an automated evaluation report for Hindi-to-English TTS dubbing.",
         "",
-        "=== PASS RATES (PASS / total clean segments) ===",
+        f"Run directory : {os.path.basename(run_dir)}",
+        f"Models tested : {', '.join(models)}",
+        f"Gates run     : {', '.join(gates)}",
+        "",
+        "=== PASS RATES (PASS count / clean segments, NM = near-miss count) ===",
+        "",
     ]
 
-    # Header row
-    lines.append(f"{'Gate':<16} " + "  ".join(f"{m:<10}" for m in models))
-    lines.append("-" * (16 + 12 * len(models)))
+    # Table header
+    header = f"{'Gate':<16}" + "".join(f"  {m:<16}" for m in models)
+    lines.append(header)
+    lines.append("-" * len(header))
 
     for gate in gates:
         row = f"{gate:<16}"
         for model in models:
             df = matrix.get(model)
             if df is None or gate not in df.columns:
-                row += f"  {'N/A':<10}"
+                row += f"  {'N/A':<16}"
                 continue
-            statuses = df[gate]
-            total  = len(statuses[statuses != "SKIP"])
-            passes = (statuses == "PASS").sum()
-            nm     = (statuses == "NEAR_MISS").sum()
-            pct    = f"{passes}/{total}" if total > 0 else "—"
-            row += f"  {pct:<6} ({nm} NM)"
+            col    = df[gate]
+            total  = (col != "SKIP").sum()
+            passes = (col == "PASS").sum()
+            nm     = (col == "NEAR_MISS").sum()
+            fails  = (col == "FAIL").sum()
+            cell   = f"{passes}/{total} ({nm} NM, {fails} F)"
+            row   += f"  {cell:<16}"
         lines.append(row)
 
-    lines += ["", "=== FAILED AND NEAR-MISS SEGMENTS ==="]
+    lines += ["", "=== PROBLEM SEGMENTS (FAIL and NEAR_MISS only) ===", ""]
+    found_problems = False
     for model in models:
         df = matrix.get(model)
         if df is None:
             continue
-        problem_rows = []
+        model_probs: list[str] = []
         for gate in gates:
             if gate not in df.columns:
                 continue
             for sample in df.index:
                 status = df.loc[sample, gate]
                 if status in ("FAIL", "NEAR_MISS"):
-                    problem_rows.append(f"  {model} / {sample} / {gate}: {status}")
-        if problem_rows:
-            lines.append(f"\nModel: {model}")
-            lines.extend(problem_rows)
+                    model_probs.append(f"  {sample:<25} {gate:<16} → {status}")
+        if model_probs:
+            found_problems = True
+            lines.append(f"Model: {model}")
+            lines.extend(model_probs)
+            lines.append("")
+
+    if not found_problems:
+        lines.append("  (no failures or near-misses detected)")
 
     lines += [
         "",
-        "=== TASK FOR LLM ===",
-        "You are a TTS quality analyst reviewing dubbing quality metrics.",
-        "Based on the data above, provide:",
-        "1. An overall quality verdict per model (production-ready / needs work / reject)",
-        "2. Which model performs best and why",
-        "3. The main failure patterns (which gates fail most, which samples are problematic)",
-        "4. Concrete recommendations for the TTS team",
-        "Keep the response concise and actionable.",
+        "=== YOUR TASK ===",
+        "Based on the data above, provide a concise quality report covering:",
+        "1. Overall verdict for each model: production-ready / needs work / reject",
+        "2. Which model performs best overall and which gate differentiates them most",
+        "3. The top 2–3 failure patterns (recurring gate failures or sample-level issues)",
+        "4. Specific, actionable recommendations for the TTS/audio team",
+        "Keep the response under 400 words. Be direct and specific — avoid generic advice.",
     ]
 
     prompt = "\n".join(lines)
 
-    try:
-        gemini = genai.GenerativeModel("gemini-1.5-pro")
-        response = gemini.generate_content(prompt)
-        report_text = response.text
-    except Exception as e:
-        print(f"[report] Gemini call failed: {e}")
+    # ── Call Gemini (try models in preference order for free-tier compatibility) ──
+    # Try models in preference order — lite variants more likely to have free-tier quota
+    _MODELS = [
+        "gemini-2.0-flash-lite",
+        "gemini-2.0-flash",
+        "gemini-flash-lite-latest",
+        "gemini-flash-latest",
+        "gemini-pro-latest",
+    ]
+    _RETRY_CODES = ("429", "404", "RESOURCE_EXHAUSTED", "NOT_FOUND")
+
+    client     = _genai.Client(api_key=api_key)
+    report_text: str | None = None
+
+    for model_name in _MODELS:
+        try:
+            response    = client.models.generate_content(model=model_name, contents=prompt)
+            report_text = response.text
+            log.info("[report] Gemini model used: %s", model_name)
+            break
+        except Exception as e:
+            err_str = str(e)
+            if any(code in err_str for code in _RETRY_CODES):
+                reason = "quota exceeded" if "429" in err_str or "RESOURCE_EXHAUSTED" in err_str else "not found"
+                log.warning("[report] %s %s, trying next model…", model_name, reason)
+                continue
+            log.error("[report] Gemini call failed on %s: %s", model_name, e)
+            return   # unexpected error, don't retry
+
+    if report_text is None:
+        log.error("[report] All Gemini models unavailable. Run again later or check your API key.")
         return
 
     out = os.path.join(run_dir, "llm_report.txt")
-    with open(out, "w", encoding="utf-8") as f:
-        f.write("=== INPUT TO LLM ===\n\n")
-        f.write(prompt)
-        f.write("\n\n=== LLM RESPONSE ===\n\n")
-        f.write(report_text)
+    try:
+        with open(out, "w", encoding="utf-8") as f:
+            f.write("=== PROMPT SENT TO GEMINI ===\n\n")
+            f.write(prompt)
+            f.write("\n\n=== GEMINI RESPONSE ===\n\n")
+            f.write(report_text)
+    except OSError as e:
+        log.error("[report] Could not write LLM report: %s", e)
+        return
 
-    print(f"[report] LLM report → {out}")
+    log.info("[report] LLM report   → %s", out)
 
 
-# ── Main ───────────────────────────────────────────────────────────────────────
-def generate(run_dir):
-    print(f"[report] Generating report for: {run_dir}")
+# ── Public entry point ─────────────────────────────────────────────────────────
+def generate(run_dir: str) -> None:
+    """Generate all report artefacts for a completed pipeline run."""
+    log.info("[report] Generating report for run: %s", run_dir)
+
     matrix, models, samples, gates = _build_matrix(run_dir)
 
     if not gates:
-        print("[report] No gate data found — skipping visualizations")
+        log.warning("[report] No gate output found in %s — skipping report", run_dir)
         return
 
-    print(f"[report] Found {len(models)} model(s), {len(samples)} sample(s), {len(gates)} gate(s)")
+    log.info("[report] %d model(s), %d sample(s), %d gate(s)",
+             len(models), len(samples), len(gates))
 
-    make_radar(run_dir, matrix, models, gates)
-    make_heatmap(run_dir, matrix, models, samples, gates)
-    make_llm_report(run_dir, matrix, models, gates)
-    print("[report] Done.")
+    _make_radar(run_dir, matrix, models, gates)
+    _make_heatmap(run_dir, matrix, models, samples, gates)
+    _make_llm_report(run_dir, matrix, models, gates)
+
+    log.info("[report] Report complete.")
 
 
+# ── CLI entry point ────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-    parser = argparse.ArgumentParser(description="Generate report for a pipeline run")
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s  %(levelname)-8s  %(message)s",
+        datefmt="%H:%M:%S",
+    )
+
+    parser = argparse.ArgumentParser(
+        description="Generate radar chart, heatmap, and Gemini report for a pipeline run."
+    )
     parser.add_argument(
         "--run-dir",
         required=True,
-        help="Path to the run output directory (e.g. output/runs/2026-04-03_10-00-00/)"
+        help="Path to the run output directory (e.g. output/runs/2026-04-03_10-00-00/)",
     )
     args = parser.parse_args()
 
     if not os.path.isdir(args.run_dir):
-        print(f"Error: run-dir not found: {args.run_dir}")
+        print(f"Error: directory not found: {args.run_dir}", file=sys.stderr)
         sys.exit(1)
 
     generate(args.run_dir)
