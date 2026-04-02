@@ -20,14 +20,30 @@ import sys
 import subprocess
 import argparse
 import logging
+from datetime import datetime
 
 # ── Logging ────────────────────────────────────────────────────────────────────
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s  %(levelname)-8s  %(message)s",
+# Logs go to both terminal AND a timestamped file in output/logs/
+# e.g. output/logs/pipeline_2026-04-02_15-23-00.log
+
+_LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output", "logs")
+os.makedirs(_LOG_DIR, exist_ok=True)
+_LOG_FILE = os.path.join(_LOG_DIR, f"pipeline_{datetime.now().strftime('%Y-%m-%d_%H-%M-%S')}.log")
+
+_formatter = logging.Formatter(
+    fmt="%(asctime)s  %(levelname)-8s  %(message)s",
     datefmt="%H:%M:%S",
 )
+
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(_formatter)
+
+_file_handler = logging.FileHandler(_LOG_FILE, encoding="utf-8")
+_file_handler.setFormatter(_formatter)
+
+logging.basicConfig(level=logging.INFO, handlers=[_console_handler, _file_handler])
 log = logging.getLogger("pipeline")
+log.info("Log file: %s", _LOG_FILE)
 
 # ── Locate config ──────────────────────────────────────────────────────────────
 ROOT = os.path.dirname(os.path.abspath(__file__))
