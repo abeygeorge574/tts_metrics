@@ -16,11 +16,14 @@ ROOT = "/Users/abey/Documents/tts_metrics"
 #   └── text_references/   ← plain-text ground-truth transcripts for WER gate
 #       └── sample_01.txt
 #
-DATA_DIR           = os.path.join(ROOT, "data")
-MODELS_DIR         = os.path.join(DATA_DIR, "models")
-REFERENCE_DIR      = os.path.join(DATA_DIR, "reference")
-ENROLLMENT_DIR     = os.path.join(DATA_DIR, "enrollment")
-TEXT_REFERENCE_DIR = os.path.join(DATA_DIR, "text_references")
+DATA_DIR       = os.path.join(ROOT, "data")
+MODELS_DIR     = os.path.join(DATA_DIR, "models")
+REFERENCE_DIR  = os.path.join(DATA_DIR, "reference")
+ENROLLMENT_DIR = os.path.join(DATA_DIR, "enrollment")
+
+# ── WER gate paths (separate — uses text reference files, not audio) ───────────
+WER_BASE_DIR       = os.path.join(ROOT, "WER_PER_Production", "WER_TEST")
+TEXT_REFERENCE_DIR = os.path.join(WER_BASE_DIR, "references")
 
 # ── Accent class reference clips (NOT per-segment — one clip per accent class) ─
 ACCENT_BASE_DIR = os.path.join(ROOT, "accent_classification")

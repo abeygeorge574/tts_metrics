@@ -190,7 +190,9 @@ def run_gate(model_state=None):
     model_tier    = model_state["model_tier"]
     whisper_model = model_state["model"]
 
-    MODELS_DIR     = config.MODELS_DIR
+    # WER uses its own folder — audio + text references are paired differently
+    # from the shared data/models structure used by all other audio gates.
+    MODELS_DIR     = os.path.join(config.WER_BASE_DIR, "models")
     REFERENCES_DIR = config.TEXT_REFERENCE_DIR
 
     for folder in [REFERENCES_DIR, MODELS_DIR]:
