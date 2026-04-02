@@ -62,6 +62,12 @@ NISQA_DELTA_THRESHOLDS = {
 # ── UTMOS thresholds ───────────────────────────────────────────────────────────
 UTMOS_THRESHOLD = 3.0
 
+# ── Short segment threshold ───────────────────────────────────────────────────
+# Files shorter than this are still scored but flagged as SHORT_SEGMENT and
+# counted as degraded in all gates. Fast-switching dialogue lines can be <1 s
+# so we flag rather than skip — the score is real, just higher-uncertainty.
+MIN_SEGMENT_DURATION = 2.0   # seconds
+
 # ── Speaker similarity thresholds ─────────────────────────────────────────────
 SPEAKER_SIM_THRESHOLD = 0.75
 

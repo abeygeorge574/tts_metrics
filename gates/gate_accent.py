@@ -217,15 +217,25 @@ def run_gate(model_state=None):
         print(f"{'='*50}")
 
         embeddings = {}
+        short_flags = {}
         for wav_file in model_samples[model]:
+            import soundfile as sf
             sample_name = os.path.splitext(wav_file)[0]
             audio_path  = os.path.join(MODELS_DIR, model, wav_file)
+
+            duration = sf.info(audio_path).duration
+            is_short = duration < config.MIN_SEGMENT_DURATION
+            short_flags[sample_name] = is_short
 
             try:
                 emb_list = get_accent_embedding(audio_path, feature_extractor, wav2vec2, device)
                 embeddings[sample_name] = emb_list   # list of chunk embeddings
                 n = len(emb_list)
-                print(f"  Embedded: {sample_name} ({n} chunk{'s' if n > 1 else ''})")
+                label = f" ({n} chunk{'s' if n > 1 else ''})"
+                if is_short:
+                    print(f"  Embedded: {sample_name}{label} [SHORT: {duration:.2f}s]")
+                else:
+                    print(f"  Embedded: {sample_name}{label}")
             except Exception as e:
                 print(f"  Embedding failed: {sample_name} — {e}")
                 embeddings[sample_name] = None
@@ -290,6 +300,7 @@ def run_gate(model_state=None):
                 "Closest Accent": closest_accent,
                 "Target Pass"   : "PASS" if target_pass else "FAIL" if target_pass is not None else "—",
                 "Final Pass"    : final_pass,
+                "Flag"          : "SHORT_SEGMENT" if short_flags.get(sample_name) else "—",
             }
             for accent_name in ACCENT_REFERENCES:
                 row[f"Proximity_{accent_name}"] = proximities.get(accent_name)

@@ -265,11 +265,17 @@ def run_gate(model_state=None):
         log.info("=" * 50)
 
         for wav_file in model_samples[m]:
+            import soundfile as sf
             sample_name = os.path.splitext(wav_file)[0]
             out_path    = os.path.join(MODELS_DIR, m, wav_file)
             ref_path    = os.path.join(REF_DIR, wav_file)
 
-            log.info("  Sample: %s", sample_name)
+            duration = sf.info(out_path).duration
+            is_short = duration < config.MIN_SEGMENT_DURATION
+            if is_short:
+                log.info("  Sample: %s [SHORT: %.2fs]", sample_name, duration)
+            else:
+                log.info("  Sample: %s", sample_name)
 
             if not os.path.exists(ref_path):
                 log.warning("  Reference missing — skipping")
@@ -329,6 +335,8 @@ def run_gate(model_state=None):
                 "Delta_Arousal" : delta_ar,
                 "Delta_Valence" : delta_val,
                 "Pass"          : passed,
+                "Flag"          : "SHORT_SEGMENT" if is_short else "—",
+                "_is_degraded"  : is_short,
             })
 
     log.info("")

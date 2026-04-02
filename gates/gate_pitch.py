@@ -28,15 +28,24 @@ def load_model():
 
 
 # ── Pitch computation ──────────────────────────────────────────────────────────
+# pyin does not need the native sample rate — pitch lives below 1 kHz so 16 kHz
+# is more than sufficient.  Loading at 16 kHz reduces computation ~3× for typical
+# 44.1/48 kHz broadcast files.  hop_length=1024 gives 64 ms resolution which is
+# more than enough for median/std statistics.
+_PITCH_SR       = 16000
+_PITCH_HOP      = 1024   # 64 ms at 16 kHz
+
+
 def compute_pitch(audio_path):
     try:
-        audio, sr = librosa.load(audio_path, sr=None, mono=True)
+        audio, sr = librosa.load(audio_path, sr=_PITCH_SR, mono=True)
 
         f0, voiced_flag, voiced_probs = librosa.pyin(
             audio,
             fmin=librosa.note_to_hz("C2"),
             fmax=librosa.note_to_hz("C7"),
-            sr=sr
+            sr=sr,
+            hop_length=_PITCH_HOP,
         )
 
         voiced_f0 = f0[voiced_flag]
@@ -117,10 +126,16 @@ def run_gate(model_state=None):
         print(f"{'='*50}")
 
         for wav_file in model_samples[model]:
+            import soundfile as sf
             sample_name = os.path.splitext(wav_file)[0]
             tts_path    = os.path.join(MODELS_DIR, model, wav_file)
 
-            print(f"\n  Sample : {sample_name}")
+            duration = sf.info(tts_path).duration
+            is_short = duration < config.MIN_SEGMENT_DURATION
+            if is_short:
+                print(f"\n  Sample : {sample_name} [SHORT: {duration:.2f}s]")
+            else:
+                print(f"\n  Sample : {sample_name}")
 
             tts_median, tts_std, tts_voiced_ratio = compute_pitch(tts_path)
             print(f"  TTS    : median={tts_median}Hz | std={tts_std}Hz | voiced={tts_voiced_ratio}")
@@ -194,7 +209,8 @@ def run_gate(model_state=None):
                 "Median Pass"   : "PASS" if median_pass else "FAIL" if median_pass is not None else "—",
                 "Final Pass"    : final_pass,
                 "Ref Flag"      : ref_flag,
-                "_is_degraded"  : is_degraded,
+                "_is_degraded"  : is_degraded or is_short,
+                "Flag"          : "SHORT_SEGMENT" if is_short else ref_flag,
             })
 
     print("\n\nAll evaluations complete.")

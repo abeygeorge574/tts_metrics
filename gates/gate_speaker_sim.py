@@ -206,10 +206,16 @@ def run_gate(model_state=None):
         print(f"{'='*50}")
 
         for wav_file in model_samples[model]:
+            import soundfile as sf
             sample_name = os.path.splitext(wav_file)[0]
             tts_path    = os.path.join(MODELS_DIR, model, wav_file)
 
-            print(f"\n  Sample : {sample_name}")
+            duration = sf.info(tts_path).duration
+            is_short = duration < config.MIN_SEGMENT_DURATION
+            if is_short:
+                print(f"\n  Sample : {sample_name} [SHORT: {duration:.2f}s]")
+            else:
+                print(f"\n  Sample : {sample_name}")
 
             utterance_path = os.path.join(REFERENCE_DIR, wav_file) if reference_available else None
 
@@ -241,6 +247,7 @@ def run_gate(model_state=None):
                 "Score"   : score,
                 "Pass"    : "PASS" if passed else "FAIL",
                 "Ref Type": ref_type,
+                "Flag"    : "SHORT_SEGMENT" if is_short else "—",
             })
 
     print("\n\nAll evaluations complete.")
