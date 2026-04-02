@@ -121,11 +121,17 @@ def run_gate(model_state=None):
         print(f"{'='*50}")
 
         for wav_file in model_samples[model]:
+            import soundfile as sf
             sample_name = os.path.splitext(wav_file)[0]
             tts_path    = os.path.join(MODELS_DIR, model, wav_file)
             ref_path    = os.path.join(REFERENCE_DIR, wav_file)
 
-            print(f"\n  Sample : {sample_name}")
+            duration = sf.info(tts_path).duration
+            is_short = duration < config.MIN_SEGMENT_DURATION
+            if is_short:
+                print(f"\n  Sample : {sample_name} [SHORT: {duration:.2f}s]")
+            else:
+                print(f"\n  Sample : {sample_name}")
 
             try:
                 ref_lufs, ref_lra, ref_cent, ref_peak = analyze_audio(ref_path)
@@ -136,9 +142,14 @@ def run_gate(model_state=None):
                 print(f"  TTS    : LUFS={tts_lufs} | LRA={tts_lra} | "
                       f"Cent={tts_cent} | Peak={tts_peak}")
 
+                # SHORT_SEGMENT degrades LUFS and LRA reliability (EBU R128 needs
+                # minimum gating window; LRA needs duration to show variation)
                 ref_lufs_degraded = not (REF_LUFS_MIN <= ref_lufs <= REF_LUFS_MAX)
-                is_degraded       = ref_lufs_degraded
-                ref_flag          = "REF_LUFS_DEGRADED" if ref_lufs_degraded else "—"
+                is_degraded       = ref_lufs_degraded or is_short
+                ref_flag          = (
+                    "SHORT_SEGMENT"     if is_short          else
+                    "REF_LUFS_DEGRADED" if ref_lufs_degraded else "—"
+                )
 
                 tts_clipping = tts_peak >= PEAK_LIMIT
                 ref_clipping = ref_peak >= PEAK_LIMIT
