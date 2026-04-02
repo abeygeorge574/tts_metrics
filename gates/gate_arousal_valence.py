@@ -117,6 +117,10 @@ def _download_and_patch(model_name):
 
 # ── Model loading ──────────────────────────────────────────────────────────────
 def load_model():
+    import logging as _logging
+    # Suppress httpx HTTP Request lines from HuggingFace Hub cache checks
+    _logging.getLogger("httpx").setLevel(_logging.WARNING)
+
     MODEL_NAME = "audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim"
 
     device = _get_device()

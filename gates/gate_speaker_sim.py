@@ -88,6 +88,12 @@ def _patch_speechbrain_fetch():
 
 # ── Model loading ──────────────────────────────────────────────────────────────
 def load_model():
+    import logging
+    # Suppress SpeechBrain checkpoint hook registrations and internal path DEBUG lines
+    logging.getLogger("speechbrain").setLevel(logging.WARNING)
+    # Suppress httpx HTTP Request lines printed during HuggingFace Hub cache checks
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+
     _patch_huggingface_hub()
     _patch_speechbrain_fetch()
 
