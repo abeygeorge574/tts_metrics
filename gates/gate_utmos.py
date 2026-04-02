@@ -86,7 +86,7 @@ def load_model():
 
 
 # ── Score single file ──────────────────────────────────────────────────────────
-_UTMOS_MAX_CHUNK_S = 30   # each chunk ≤ this many seconds (wav2vec2 is O(n²))
+_UTMOS_MAX_CHUNK_S = 10   # training distribution ~3-10s; also prevents O(n²) OOM
 _UTMOS_MIN_S       = 1    # discard chunks shorter than this
 
 def utmos_score(audio_path, scorer, device="cpu"):

@@ -162,7 +162,7 @@ def load_model():
 
 # wav2vec2 attention is O(n²) — cap chunk length to avoid OOM on long audio.
 # Chunks are equal length (each ≤ max) so averaging isn't biased by a short tail.
-_MAX_CHUNK_SAMPLES = 30 * 16000   # each chunk ≤ 30 seconds at 16 kHz
+_MAX_CHUNK_SAMPLES = 15 * 16000   # training distribution ~5-15s; also prevents OOM
 _MIN_CHUNK_SAMPLES = 1  * 16000   # discard chunks shorter than 1 second
 
 

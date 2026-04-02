@@ -18,7 +18,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 
-_NISQA_CHUNK_S = 30   # seconds per chunk
+_NISQA_CHUNK_S = 15   # training distribution ~5-15s
 
 
 # ── Model loading ──────────────────────────────────────────────────────────────

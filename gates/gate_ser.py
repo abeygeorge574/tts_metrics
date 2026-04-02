@@ -20,7 +20,7 @@ import pandas as pd
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 
-_SER_CHUNK_S = 30   # seconds per chunk
+_SER_CHUNK_S = 15   # emotion needs full utterance arc; training distribution ~5-15s
 
 
 # ── Model loading ──────────────────────────────────────────────────────────────
