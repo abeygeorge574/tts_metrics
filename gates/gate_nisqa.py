@@ -144,7 +144,23 @@ def run_gate(model_state=None):
 
             print(f"\n  Sample: {sample_name}")
 
-            tts_scores    = score_single_file(tts_path, nisqa_weight)
+            try:
+                tts_scores = score_single_file(tts_path, nisqa_weight)
+            except ValueError as e:
+                if "max_length" in str(e) or "n_wins" in str(e):
+                    print(f"  SKIP: file too long for NISQA ({e})")
+                    results.append({
+                        "Model": model, "Sample": sample_name,
+                        "MOS": None, "Noisiness": None, "Discontinuity": None,
+                        "Coloration": None, "Loudness": None,
+                        "ΔMOS": None, "ΔNoisiness": None, "ΔDiscontinuity": None,
+                        "ΔColoration": None, "ΔLoudness": None,
+                        "Absolute": "SKIP", "Final": "SKIP",
+                        "Primary Failure": "TOO_LONG", "Flag": "TOO_LONG",
+                    })
+                    continue
+                raise
+
             absolute_pass = get_absolute_pass(tts_scores)
             print(f"  TTS    → MOS: {tts_scores['MOS']} | Noi: {tts_scores['Noisiness']} | "
                   f"Dis: {tts_scores['Discontinuity']} | Col: {tts_scores['Coloration']} | "
@@ -162,12 +178,22 @@ def run_gate(model_state=None):
                     ref_flag = "NO_REF"
                     print(f"  No reference file found for {wav_file}")
                 else:
-                    ref_scores = score_single_file(ref_path, nisqa_weight)
-                    print(f"  REF    → MOS: {ref_scores['MOS']} | Noi: {ref_scores['Noisiness']} | "
-                          f"Dis: {ref_scores['Discontinuity']} | Col: {ref_scores['Coloration']} | "
-                          f"Lou: {ref_scores['Loudness']}")
+                    try:
+                        ref_scores = score_single_file(ref_path, nisqa_weight)
+                    except ValueError as e:
+                        if "max_length" in str(e) or "n_wins" in str(e):
+                            print(f"  Reference too long for NISQA — falling back to absolute only")
+                            ref_flag = "REF_TOO_LONG"
+                            ref_scores = None
+                        else:
+                            raise
 
-                    if ref_scores["MOS"] < 3.0:
+                    if ref_scores is not None:
+                        print(f"  REF    → MOS: {ref_scores['MOS']} | Noi: {ref_scores['Noisiness']} | "
+                              f"Dis: {ref_scores['Discontinuity']} | Col: {ref_scores['Coloration']} | "
+                              f"Lou: {ref_scores['Loudness']}")
+
+                    if ref_scores is not None and ref_scores["MOS"] < 3.0:
                         ref_flag = "REF_QUALITY"
                         print(f"  Reference MOS below 3.0 — skipping delta")
                     else:

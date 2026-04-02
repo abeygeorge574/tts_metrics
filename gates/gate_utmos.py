@@ -86,7 +86,7 @@ def load_model():
 
 
 # ── Score single file ──────────────────────────────────────────────────────────
-def utmos_score(audio_path, scorer):
+def utmos_score(audio_path, scorer, device="cpu"):
     import torch
     import torchaudio
 
@@ -95,6 +95,9 @@ def utmos_score(audio_path, scorer):
     if wav.shape[0] > 1:
         wav = wav.mean(dim=0, keepdim=True)
 
+    # Move wav to the same device as the model to avoid device mismatch
+    wav = wav.to(device)
+
     scorer.in_sr = sr
     scorer.resampler = torchaudio.transforms.Resample(
         orig_freq=sr,
@@ -102,7 +105,7 @@ def utmos_score(audio_path, scorer):
         resampling_method="sinc_interpolation",
         lowpass_filter_width=6,
         dtype=torch.float32,
-    )
+    ).to(device)
 
     score = scorer.score(wav)
     return round(float(score[0]), 3)
@@ -114,6 +117,7 @@ def run_gate(model_state=None):
         model_state = load_model()
 
     scorer = model_state["scorer"]
+    device = model_state.get("device", "cpu")
 
     MODELS_DIR = config.MODELS_DIR
 
@@ -166,7 +170,7 @@ def run_gate(model_state=None):
 
             print(f"\n  Sample : {sample_name}")
 
-            score  = utmos_score(audio_path, scorer)
+            score  = utmos_score(audio_path, scorer, device)
             passed = score >= UTMOS_THRESHOLD
 
             print(f"  UTMOS  : {score} → {'PASS' if passed else 'FAIL'}")
