@@ -7,8 +7,9 @@ Pass = target accent proximity >= threshold.
 Device priority: CUDA → MPS (Apple Silicon) → CPU.
 
 Long files are split into equal-length chunks (each ≤ 30 s) in memory.
-The embedding for each chunk is computed and the chunk embeddings are
-averaged before computing cosine similarity — no temp files needed.
+Cosine similarity is computed per chunk against the reference embedding,
+then the similarities are averaged — this avoids the magnitude-collapse
+that happens when averaging embeddings whose directions partially cancel.
 """
 
 import os
@@ -57,14 +58,16 @@ _ACCENT_MAX_CHUNK_S = 30   # seconds per chunk
 _ACCENT_MIN_FRAMES  = 160  # minimum samples at 16 kHz (~0.01 s)
 
 
-# ── Embedding and similarity ───────────────────────────────────────────────────
+# ── Embedding extraction ───────────────────────────────────────────────────────
 def get_accent_embedding(audio_path, feature_extractor, wav2vec2, device="cpu"):
     """
-    Extract a wav2vec2 embedding for one audio file.
+    Extract wav2vec2 embeddings for one audio file.
 
-    Long files are split into equal-length chunks (each ≤ 30 s) in memory.
-    The per-chunk embeddings are averaged to form a single file embedding —
-    no temp files needed.
+    Always returns a LIST of embeddings — one per chunk.
+    Short files (≤ 30 s) return a list with a single element.
+    Long files return one embedding per equal-length chunk.
+    Callers average cosine similarities across the list rather than
+    averaging embeddings, which preserves per-chunk magnitude information.
     """
     import math
 
@@ -113,19 +116,19 @@ def get_accent_embedding(audio_path, feature_extractor, wav2vec2, device="cpu"):
         emb = outputs.last_hidden_state.mean(dim=1).squeeze()
         chunk_embeddings.append(emb)
 
-    if len(chunk_embeddings) == 1:
-        return chunk_embeddings[0]
-
-    # Average embeddings across chunks, then L2-normalise
-    stacked = torch.stack(chunk_embeddings, dim=0)   # (N, D)
-    mean_emb = stacked.mean(dim=0)                   # (D,)
-    return mean_emb
+    return chunk_embeddings   # always a list
 
 
 def cosine_sim(emb1, emb2):
     e1 = emb1 / torch.norm(emb1)
     e2 = emb2 / torch.norm(emb2)
     return round(float(torch.dot(e1, e2)), 4)
+
+
+def mean_cosine_sim(emb_list, ref_emb):
+    """Average cosine similarity of each chunk embedding against one reference."""
+    sims = [cosine_sim(e, ref_emb) for e in emb_list]
+    return round(sum(sims) / len(sims), 4)
 
 
 # ── Main gate ──────────────────────────────────────────────────────────────────
@@ -193,12 +196,13 @@ def run_gate(model_state=None):
     print(f"\nReady: {len(model_folders)} models × {len(model_samples[model_folders[0]])} samples = {total} evaluations")
 
     # pre-compute accent reference embeddings
+    # Reference clips are short fixed clips — take the single embedding from the list
     print("\nExtracting accent reference embeddings...")
     accent_ref_embeddings = {}
     for accent_name, ref_path in ACCENT_REFERENCES.items():
         try:
-            emb = get_accent_embedding(ref_path, feature_extractor, wav2vec2, device)
-            accent_ref_embeddings[accent_name] = emb
+            emb_list = get_accent_embedding(ref_path, feature_extractor, wav2vec2, device)
+            accent_ref_embeddings[accent_name] = emb_list[0]
             print(f"  {accent_name}: {ref_path}")
         except Exception as e:
             print(f"  {accent_name} failed: {e}")
@@ -218,9 +222,10 @@ def run_gate(model_state=None):
             audio_path  = os.path.join(MODELS_DIR, model, wav_file)
 
             try:
-                emb = get_accent_embedding(audio_path, feature_extractor, wav2vec2, device)
-                embeddings[sample_name] = emb
-                print(f"  Embedded: {sample_name}")
+                emb_list = get_accent_embedding(audio_path, feature_extractor, wav2vec2, device)
+                embeddings[sample_name] = emb_list   # list of chunk embeddings
+                n = len(emb_list)
+                print(f"  Embedded: {sample_name} ({n} chunk{'s' if n > 1 else ''})")
             except Exception as e:
                 print(f"  Embedding failed: {sample_name} — {e}")
                 embeddings[sample_name] = None
@@ -232,9 +237,9 @@ def run_gate(model_state=None):
 
         for wav_file in model_samples[model]:
             sample_name = os.path.splitext(wav_file)[0]
-            emb         = embeddings.get(sample_name)
+            emb_list    = embeddings.get(sample_name)
 
-            if emb is None:
+            if emb_list is None:
                 row = {
                     "Model"         : model,
                     "Sample"        : sample_name,
@@ -251,7 +256,8 @@ def run_gate(model_state=None):
             proximities = {}
             for accent_name, ref_emb in accent_ref_embeddings.items():
                 if ref_emb is not None:
-                    proximities[accent_name] = cosine_sim(emb, ref_emb)
+                    # Average cosine similarity across chunks (Option B)
+                    proximities[accent_name] = mean_cosine_sim(emb_list, ref_emb)
                 else:
                     proximities[accent_name] = None
 
