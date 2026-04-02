@@ -288,6 +288,13 @@ def main():
         log.info("Results in: %s", args.output_dir)
         log.info("Run ID    : %s", _RUN_ID)
 
+        # Generate visualizations and optional LLM report
+        try:
+            from generate_report import generate as _generate_report
+            _generate_report(args.output_dir)
+        except Exception as _e:
+            log.warning("Report generation failed (non-fatal): %s", _e)
+
 
 if __name__ == "__main__":
     main()
