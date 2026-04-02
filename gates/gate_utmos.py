@@ -86,6 +86,9 @@ def load_model():
 
 
 # ── Score single file ──────────────────────────────────────────────────────────
+_UTMOS_CHUNK_S  = 30   # max chunk length in seconds (wav2vec2 is O(n²) attention)
+_UTMOS_MIN_S    = 1    # discard tail chunks shorter than this
+
 def utmos_score(audio_path, scorer, device="cpu"):
     import torch
     import torchaudio
@@ -94,9 +97,6 @@ def utmos_score(audio_path, scorer, device="cpu"):
 
     if wav.shape[0] > 1:
         wav = wav.mean(dim=0, keepdim=True)
-
-    # Move wav to the same device as the model to avoid device mismatch
-    wav = wav.to(device)
 
     scorer.in_sr = sr
     scorer.resampler = torchaudio.transforms.Resample(
@@ -107,8 +107,23 @@ def utmos_score(audio_path, scorer, device="cpu"):
         dtype=torch.float32,
     ).to(device)
 
-    score = scorer.score(wav)
-    return round(float(score[0]), 3)
+    chunk_frames = int(_UTMOS_CHUNK_S * sr)
+    min_frames   = int(_UTMOS_MIN_S   * sr)
+    total_frames = wav.shape[-1]
+
+    if total_frames <= chunk_frames:
+        # Short file — score in one shot
+        return round(float(scorer.score(wav.to(device))[0]), 3)
+
+    # Long file — chunk, score each, average
+    scores = []
+    for start in range(0, total_frames, chunk_frames):
+        chunk = wav[:, start:start + chunk_frames]
+        if chunk.shape[-1] < min_frames:
+            break
+        scores.append(float(scorer.score(chunk.to(device))[0]))
+
+    return round(sum(scores) / len(scores), 3) if scores else 0.0
 
 
 # ── Main gate ──────────────────────────────────────────────────────────────────
