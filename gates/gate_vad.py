@@ -205,13 +205,12 @@ def compare_pauses(ref_pauses, tts_pauses):
 
 # ── Main gate ──────────────────────────────────────────────────────────────────
 def run_gate(model_state=None):
-    BASE_DIR      = config.VAD_BASE_DIR
-    REFERENCE_DIR = os.path.join(BASE_DIR, "reference")
-    MODELS_DIR    = os.path.join(BASE_DIR, "models")
+    MODELS_DIR    = config.MODELS_DIR
+    REFERENCE_DIR = config.REFERENCE_DIR
 
     REF_PAUSES_PER_SECOND_LIMIT = config.REF_PAUSES_PER_SECOND_LIMIT
 
-    for folder in [BASE_DIR, REFERENCE_DIR, MODELS_DIR]:
+    for folder in [REFERENCE_DIR, MODELS_DIR]:
         if not os.path.exists(folder):
             raise FileNotFoundError(f"Folder not found: {folder}")
     print("Top level folders found.")

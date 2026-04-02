@@ -64,9 +64,8 @@ def run_gate(model_state=None):
 
     ser_model = model_state["ser_model"]
 
-    BASE_DIR      = config.SER_BASE_DIR
-    REFERENCE_DIR = os.path.join(BASE_DIR, "reference")
-    MODELS_DIR    = os.path.join(BASE_DIR, "models")
+    MODELS_DIR    = config.MODELS_DIR
+    REFERENCE_DIR = config.REFERENCE_DIR
 
     CONFIDENCE_THRESHOLD = config.SER_CONFIDENCE_THRESHOLD
 

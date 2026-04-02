@@ -85,9 +85,8 @@ def run_gate(model_state=None):
 
     nisqa_weight = model_state["nisqa_weight"]
 
-    BASE_DIR      = config.NISQA_BASE_DIR
-    REFERENCE_DIR = os.path.join(BASE_DIR, "reference")
-    MODELS_DIR    = os.path.join(BASE_DIR, "models")
+    MODELS_DIR    = config.MODELS_DIR
+    REFERENCE_DIR = config.REFERENCE_DIR
 
     if not os.path.exists(MODELS_DIR):
         raise FileNotFoundError(f"Models folder not found: {MODELS_DIR}")

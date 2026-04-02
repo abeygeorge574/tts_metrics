@@ -2,24 +2,34 @@ import os
 
 ROOT = "/Users/abey/Documents/tts_metrics"
 
-# ── Gate base directories ──────────────────────────────────────────────────────
-WER_BASE_DIR      = os.path.join(ROOT, "WER_PER_Production", "WER_TEST")
-NISQA_BASE_DIR    = os.path.join(ROOT, "NISQA_prod")
-UTMOS_BASE_DIR    = os.path.join(ROOT, "UTMOS")
-SPEAKER_SIM_DIR   = os.path.join(ROOT, "speaker_similarity")
-SER_BASE_DIR      = os.path.join(ROOT, "SER")
-PITCH_BASE_DIR    = os.path.join(ROOT, "pitch")
-DURATION_BASE_DIR = os.path.join(ROOT, "duration_ratio")
-VAD_BASE_DIR      = os.path.join(ROOT, "pause_alignment")
-AMPLITUDE_BASE_DIR = os.path.join(ROOT, "amplitude")
-ACCENT_BASE_DIR          = os.path.join(ROOT, "accent_classification")
-AROUSAL_VALENCE_BASE_DIR = os.path.join(ROOT, "arousal_valence")
+# ── Shared data directory ──────────────────────────────────────────────────────
+# All audio gates read from the same folder.  Put your files here once and
+# every gate evaluates them — no duplication across gate-specific folders.
+#
+#   data/
+#   ├── models/            ← TTS / STS model outputs, one sub-folder per model
+#   │   ├── model_1/
+#   │   └── model_2/
+#   ├── reference/         ← per-segment human reference audio (same filenames)
+#   ├── enrollment/        ← single speaker clip for speaker similarity gate
+#   │   └── speaker.wav
+#   └── text_references/   ← plain-text ground-truth transcripts for WER gate
+#       └── sample_01.txt
+#
+DATA_DIR           = os.path.join(ROOT, "data")
+MODELS_DIR         = os.path.join(DATA_DIR, "models")
+REFERENCE_DIR      = os.path.join(DATA_DIR, "reference")
+ENROLLMENT_DIR     = os.path.join(DATA_DIR, "enrollment")
+TEXT_REFERENCE_DIR = os.path.join(DATA_DIR, "text_references")
+
+# ── Accent class reference clips (NOT per-segment — one clip per accent class) ─
+ACCENT_BASE_DIR = os.path.join(ROOT, "accent_classification")
 
 # ── Model / weights paths ──────────────────────────────────────────────────────
-NISQA_REPO  = os.path.join(NISQA_BASE_DIR, "model")
+NISQA_REPO   = os.path.join(ROOT, "NISQA_prod", "model")
 NISQA_WEIGHT = os.path.join(NISQA_REPO, "weights", "nisqa.tar")
 
-UTMOS_MODEL_DIR = os.path.join(UTMOS_BASE_DIR, "model", "simple")
+UTMOS_MODEL_DIR = os.path.join(ROOT, "UTMOS", "model", "simple")
 UTMOS_CKPT      = os.path.join(UTMOS_MODEL_DIR, "epoch=3-step=7459.ckpt")
 
 # ── Output directory ───────────────────────────────────────────────────────────

@@ -144,10 +144,9 @@ def run_gate(model_state=None):
 
     classifier = model_state["classifier"]
 
-    BASE_DIR        = config.SPEAKER_SIM_DIR
-    REFERENCE_DIR   = os.path.join(BASE_DIR, "reference")
-    ENROLLMENT_FILE = os.path.join(BASE_DIR, "enrollment", "speaker.wav")
-    MODELS_DIR      = os.path.join(BASE_DIR, "models")
+    MODELS_DIR      = config.MODELS_DIR
+    REFERENCE_DIR   = config.REFERENCE_DIR
+    ENROLLMENT_FILE = os.path.join(config.ENROLLMENT_DIR, "speaker.wav")
 
     SPEAKER_SIM_THRESHOLD = config.SPEAKER_SIM_THRESHOLD
 

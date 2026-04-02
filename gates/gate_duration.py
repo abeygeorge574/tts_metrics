@@ -32,15 +32,14 @@ def get_duration(file_path):
 
 # ── Main gate ──────────────────────────────────────────────────────────────────
 def run_gate(model_state=None):
-    BASE_DIR      = config.DURATION_BASE_DIR
-    REFERENCE_DIR = os.path.join(BASE_DIR, "reference")
-    MODELS_DIR    = os.path.join(BASE_DIR, "models")
+    MODELS_DIR    = config.MODELS_DIR
+    REFERENCE_DIR = config.REFERENCE_DIR
 
     DURATION_TOLERANCE = config.DURATION_TOLERANCE
     lower_bound        = 1.0 - DURATION_TOLERANCE
     upper_bound        = 1.0 + DURATION_TOLERANCE
 
-    for folder in [BASE_DIR, REFERENCE_DIR, MODELS_DIR]:
+    for folder in [REFERENCE_DIR, MODELS_DIR]:
         if not os.path.exists(folder):
             raise FileNotFoundError(f"Folder not found: {folder}")
     print("Top level folders found.")

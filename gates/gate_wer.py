@@ -190,11 +190,10 @@ def run_gate(model_state=None):
     model_tier    = model_state["model_tier"]
     whisper_model = model_state["model"]
 
-    BASE_DIR       = config.WER_BASE_DIR
-    REFERENCES_DIR = os.path.join(BASE_DIR, "references")
-    MODELS_DIR     = os.path.join(BASE_DIR, "models")
+    MODELS_DIR     = config.MODELS_DIR
+    REFERENCES_DIR = config.TEXT_REFERENCE_DIR
 
-    for folder in [BASE_DIR, REFERENCES_DIR, MODELS_DIR]:
+    for folder in [REFERENCES_DIR, MODELS_DIR]:
         if not os.path.exists(folder):
             raise FileNotFoundError(f"Folder not found: {folder}")
     print("Top level folders found.")

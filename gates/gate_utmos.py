@@ -115,8 +115,7 @@ def run_gate(model_state=None):
 
     scorer = model_state["scorer"]
 
-    BASE_DIR   = config.UTMOS_BASE_DIR
-    MODELS_DIR = os.path.join(BASE_DIR, "models")
+    MODELS_DIR = config.MODELS_DIR
 
     if not os.path.exists(MODELS_DIR):
         raise FileNotFoundError(f"Models folder not found: {MODELS_DIR}")

@@ -60,9 +60,8 @@ def analyze_audio(file_path):
 
 # ── Main gate ──────────────────────────────────────────────────────────────────
 def run_gate(model_state=None):
-    BASE_DIR      = config.AMPLITUDE_BASE_DIR
-    REFERENCE_DIR = os.path.join(BASE_DIR, "reference")
-    MODELS_DIR    = os.path.join(BASE_DIR, "models")
+    MODELS_DIR    = config.MODELS_DIR
+    REFERENCE_DIR = config.REFERENCE_DIR
 
     LUFS_TOLERANCE     = config.LUFS_TOLERANCE
     LRA_TOLERANCE      = config.LRA_TOLERANCE
@@ -71,7 +70,7 @@ def run_gate(model_state=None):
     REF_LUFS_MIN       = config.REF_LUFS_MIN
     REF_LUFS_MAX       = config.REF_LUFS_MAX
 
-    for folder in [BASE_DIR, REFERENCE_DIR, MODELS_DIR]:
+    for folder in [REFERENCE_DIR, MODELS_DIR]:
         if not os.path.exists(folder):
             raise FileNotFoundError(f"Folder not found: {folder}")
     print("Top level folders found.")

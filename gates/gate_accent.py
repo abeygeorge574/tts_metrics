@@ -92,8 +92,7 @@ def run_gate(model_state=None):
     wav2vec2          = model_state["wav2vec2"]
     device            = model_state.get("device", "cpu")
 
-    BASE_DIR   = config.ACCENT_BASE_DIR
-    MODELS_DIR = os.path.join(BASE_DIR, "models")
+    MODELS_DIR = config.MODELS_DIR
 
     ACCENT_REFERENCES     = config.ACCENT_REFERENCES
     TARGET_ACCENT         = config.ACCENT_TARGET

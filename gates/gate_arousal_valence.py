@@ -224,9 +224,8 @@ def run_gate(model_state=None):
     model     = model_state["model"]
     device    = model_state.get("device", "cpu")
 
-    BASE_DIR   = config.AROUSAL_VALENCE_BASE_DIR
-    REF_DIR    = os.path.join(BASE_DIR, "reference")
-    MODELS_DIR = os.path.join(BASE_DIR, "models")
+    MODELS_DIR = config.MODELS_DIR
+    REF_DIR    = config.REFERENCE_DIR
 
     AR_THRESH  = config.AROUSAL_DELTA_THRESHOLD
     VAL_THRESH = config.VALENCE_DELTA_THRESHOLD

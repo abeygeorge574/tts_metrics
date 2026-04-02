@@ -58,9 +58,8 @@ def compute_pitch(audio_path):
 
 # ── Main gate ──────────────────────────────────────────────────────────────────
 def run_gate(model_state=None):
-    BASE_DIR      = config.PITCH_BASE_DIR
-    REFERENCE_DIR = os.path.join(BASE_DIR, "reference")
-    MODELS_DIR    = os.path.join(BASE_DIR, "models")
+    MODELS_DIR    = config.MODELS_DIR
+    REFERENCE_DIR = config.REFERENCE_DIR
 
     PITCH_MEDIAN_THRESHOLD    = config.PITCH_MEDIAN_THRESHOLD
     PITCH_STD_ABS_THRESHOLD   = config.PITCH_STD_ABS_THRESHOLD
