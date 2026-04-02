@@ -35,19 +35,52 @@ _RUN_ID  = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
 _RUN_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output", "runs", _RUN_ID)
 os.makedirs(_RUN_DIR, exist_ok=True)
 
-# ── Logging ────────────────────────────────────────────────────────────────────
+# ── Stdout tee: everything printed to terminal is also written to the log file ──
+# This captures both logging.info() calls AND raw print() calls from gate modules,
+# giving a complete record of what appeared on the terminal.
+
 _LOG_FILE = os.path.join(_RUN_DIR, "pipeline.log")
+
+class _Tee:
+    """
+    Wrap a stream so every write goes to both the original stream and a log file.
+    Assigned to sys.stdout so that logging (via StreamHandler) and gate print()
+    calls all flow through the same path into the log file.
+    """
+    def __init__(self, stream, path: str):
+        self._stream = stream
+        self._file   = open(path, "w", encoding="utf-8", buffering=1)
+
+    def write(self, data: str) -> int:
+        n = self._stream.write(data)
+        self._file.write(data)
+        return n
+
+    def flush(self) -> None:
+        self._stream.flush()
+        self._file.flush()
+
+    def fileno(self) -> int:
+        # Expose the real fd so that subprocesses inherit the terminal, not the tee object.
+        # Subprocess output is explicitly piped back through sys.stdout in run_utmos_gate().
+        return self._stream.fileno()
+
+    def isatty(self) -> bool:
+        return self._stream.isatty()
+
+sys.stdout = _Tee(sys.__stdout__, _LOG_FILE)
+
+# ── Logging ────────────────────────────────────────────────────────────────────
+# Single console handler writing to sys.stdout (the tee).
+# No separate FileHandler needed — the tee already writes everything to the file.
 
 _formatter = logging.Formatter(
     fmt="%(asctime)s  %(levelname)-8s  %(message)s",
     datefmt="%H:%M:%S",
 )
 
-_console_handler = logging.StreamHandler()
+_console_handler = logging.StreamHandler(sys.stdout)
 _console_handler.setFormatter(_formatter)
-
-_file_handler = logging.FileHandler(_LOG_FILE, encoding="utf-8")
-_file_handler.setFormatter(_formatter)
 
 # Filter to block known-noisy third-party messages regardless of which logger emits them.
 # setLevel() on named loggers doesn't work here because FunaASR/SpeechBrain emit via
@@ -81,9 +114,8 @@ class _ThirdPartyFilter(logging.Filter):
 
 _noise_filter = _ThirdPartyFilter()
 _console_handler.addFilter(_noise_filter)
-_file_handler.addFilter(_noise_filter)
 
-logging.basicConfig(level=logging.INFO, handlers=[_console_handler, _file_handler])
+logging.basicConfig(level=logging.INFO, handlers=[_console_handler])
 log = logging.getLogger("pipeline")
 log.info("Log file: %s", _LOG_FILE)
 
@@ -166,10 +198,21 @@ def find_conda_python(env_name):
 
 
 def run_utmos_gate(gate_key, gate_script, output_dir):
-    """Run a gate inside the utmos conda environment via subprocess."""
+    """
+    Run a gate inside the utmos conda environment via subprocess.
+
+    Subprocess stdout+stderr are piped back through sys.stdout (the tee) so
+    that gate print() output appears on the terminal AND in the log file,
+    matching exactly what a base-env gate produces.
+    """
     conda_python = find_conda_python(config.UTMOS_CONDA_ENV)
     gate_script_abs = os.path.join(ROOT, gate_script)
     gate_output_dir = os.path.join(output_dir, gate_key)
+
+    log.info("")
+    log.info("=" * 60)
+    log.info("Gate: %s", gate_key.upper())
+    log.info("=" * 60)
 
     if conda_python:
         cmd = [conda_python, gate_script_abs, "--output-dir", gate_output_dir]
@@ -182,9 +225,22 @@ def run_utmos_gate(gate_key, gate_script, output_dir):
         ]
         log.info("[%s] subprocess → conda run -n %s", gate_key, config.UTMOS_CONDA_ENV)
 
-    result = subprocess.run(cmd, text=True)
-    if result.returncode != 0:
-        log.error("[%s] FAILED (exit code %d)", gate_key, result.returncode)
+    # Merge stderr into stdout so everything comes through one pipe.
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,          # line-buffered for real-time display
+    )
+    for line in iter(proc.stdout.readline, ""):
+        sys.stdout.write(line)   # flows through the tee → terminal + log file
+    sys.stdout.flush()
+    proc.stdout.close()
+    proc.wait()
+
+    if proc.returncode != 0:
+        log.error("[%s] FAILED (exit code %d)", gate_key, proc.returncode)
         return False
 
     log.info("[%s] DONE", gate_key)
