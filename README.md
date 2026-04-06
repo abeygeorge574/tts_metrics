@@ -246,6 +246,7 @@ Each gate folder contains:
 | `gate_vad` | base | Pause count, position, duration (Hungarian matching) | Count Δ ≤ 20, Pos ≤ 0.5 s, Dur ratio 0.75–1.25 |
 | `gate_amplitude` | base | LUFS, LRA, spectral centroid, true peak | LUFS Δ ≤ 4, LRA Δ ≤ 3, Centroid Δ ≤ 500 Hz, Peak < −1 dBFS |
 | `gate_accent` | utmos | wav2vec2 accent proximity (American target) | Proximity ≥ 0.75 |
+| `gate_artifact` | base | HNR tonal buzz (parselmouth) + median dBFS of real pause frames | HNR ≥ 8 dB, pause median ≤ −55 dBFS |
 
 All thresholds are in `config.py` and can be adjusted without touching gate code.
 
@@ -309,6 +310,10 @@ automatically split long audio into equal-length chunks and aggregate:
 | `CENTROID_TOLERANCE` | 500 Hz | Max spectral centroid delta |
 | `ACCENT_TARGET_THRESHOLD` | 0.75 | Min American accent proximity |
 | `MIN_SEGMENT_DURATION` | 2.0 s | Segments below this are flagged SHORT_SEGMENT |
+| `ARTIFACT_HNR_ABS_THRESHOLD` | 8.0 dB | HNR below this → ERR_VOICE_BUZZ (tonal/metallic buzz) |
+| `ARTIFACT_SILENCE_DETECT_DB` | −30.0 dBFS | Frame energy threshold for pause detection (separate from VAD gate's −40 dB) |
+| `ARTIFACT_MIN_PAUSE_FRAMES` | 10 frames | Minimum contiguous frames to count as a real pause (≥ 160 ms) |
+| `ARTIFACT_SILENCE_MEDIAN_DB` | −55.0 dBFS | Pause median above this → ERR_BACKGROUND_STATIC (broadband noise floor) |
 
 ---
 

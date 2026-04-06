@@ -67,6 +67,23 @@ UTMOS_THRESHOLD = 3.0
 # so we flag rather than skip — the score is real, just higher-uncertainty.
 MIN_SEGMENT_DURATION = 2.0   # seconds
 
+# ── Artifact / Vocoder Buzz gate thresholds ────────────────────────────────────
+# Step 1: HNR — tonal / metallic buzz on voiced speech
+ARTIFACT_HNR_ABS_THRESHOLD  = 8.0    # dB — below this → ERR_VOICE_BUZZ
+                                      # validated: kokoro 12 dB (PASS), Telugu STS 7.3 dB (FAIL)
+
+# Step 2: Real pause detection — contiguous frames below this threshold
+# NOTE: separate from SILENCE_DB (-40) used by the VAD gate.
+# -30 dB captures the noisy silence frames we want to measure.
+ARTIFACT_SILENCE_DETECT_DB  = -30.0  # dBFS — frame qualifies as silence if below this
+ARTIFACT_MIN_PAUSE_FRAMES   = 10     # frames at hop=256/sr=16k → 160 ms minimum pause
+                                      # samantha_2 has 0 real pauses → N/A (correct)
+
+# Step 3: Median dBFS of real pause frames — background static
+ARTIFACT_SILENCE_MEDIAN_DB  = -55.0  # dBFS — above this → ERR_BACKGROUND_STATIC
+                                      # validated: kokoro −65 dBFS (PASS, 10 dB margin)
+                                      #            fastspeech2 −44 dBFS (FAIL, 11 dB margin)
+
 # ── Speaker similarity thresholds ─────────────────────────────────────────────
 SPEAKER_SIM_THRESHOLD = 0.75
 

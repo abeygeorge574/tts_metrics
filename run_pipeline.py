@@ -140,6 +140,7 @@ GATE_REGISTRY = [
     ("vad",              "gates/gate_vad.py",              "base"),
     ("amplitude",        "gates/gate_amplitude.py",        "base"),
     ("accent",           "gates/gate_accent.py",           "utmos"),
+    ("artifact",         "gates/gate_artifact.py",         "base"),
 ]
 
 GATE_KEYS = [g[0] for g in GATE_REGISTRY]
