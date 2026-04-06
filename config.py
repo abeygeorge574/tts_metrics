@@ -102,7 +102,9 @@ ARTIFACT_SFM_HF_THRESHOLD   = 0.16   # above this → ERR_SPECTRAL_ARTIFACT
 ARTIFACT_CLEAN_H1H2   = 1.9          # reference H1H2 for normalisation
 ARTIFACT_CLEAN_SFM_HF = 0.134        # reference SFM_4-8k for normalisation
 ARTIFACT_CLEAN_CEP    = 0.017        # reference Cep_MidQ for normalisation
-ARTIFACT_COMBINED_THRESHOLD = 0.25   # combined score above this → ERR_SPECTRAL_ARTIFACT
+ARTIFACT_COMBINED_THRESHOLD = 0.30   # combined score above this → ERR_SPECTRAL_ARTIFACT
+                                      # raised 0.25→0.30: prevents sub-perceptual HF noise trips
+                                      # F5-TTS at 0.43 still fails with ample margin
 
 # ── Speaker similarity thresholds ─────────────────────────────────────────────
 SPEAKER_SIM_THRESHOLD = 0.75

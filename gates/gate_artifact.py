@@ -354,13 +354,19 @@ def compute_spectral_artifact_score(audio_path: str) -> dict:
     if cep_midq is not None:
         scores.append((cep_midq - ref_cep) / ref_cep)
 
+    # H1/H2 individual gate: if H1/H2 is below its own threshold, fail regardless
+    # of the combined score. This prevents the averaging from diluting a strong
+    # harmonic-slope signal when the other two sub-metrics are neutral.
+    h1h2_thresh = getattr(config, "ARTIFACT_H1H2_THRESHOLD", 1.5)
+    h1h2_individual_fail = (h1h2 is not None) and (h1h2 < h1h2_thresh)
+
     if len(scores) >= 2:
         combined = round(float(np.mean(scores)), 4)
-        thresh   = getattr(config, "ARTIFACT_COMBINED_THRESHOLD", 0.25)
-        sa_pass  = combined <= thresh
+        thresh   = getattr(config, "ARTIFACT_COMBINED_THRESHOLD", 0.30)
+        sa_pass  = (combined <= thresh) and not h1h2_individual_fail
     else:
         combined = None
-        sa_pass  = None   # insufficient data
+        sa_pass  = None if not h1h2_individual_fail else False
 
     return {
         "h1h2"    : h1h2,
