@@ -84,6 +84,26 @@ ARTIFACT_SILENCE_MEDIAN_DB  = -55.0  # dBFS — above this → ERR_BACKGROUND_ST
                                       # validated: kokoro −65 dBFS (PASS, 10 dB margin)
                                       #            fastspeech2 −44 dBFS (FAIL, 11 dB margin)
 
+# Step 4: Spectral shape artifact detection (catches f5tts-class artifacts)
+# These three metrics combined detect subtle vocoder/flow-matching artifacts.
+# H1/H2 Ratio: ratio of first-harmonic to second-harmonic amplitude in voiced frames.
+#   Low ratio = flattened harmonic slope → vocoder spectral shaping artifact.
+ARTIFACT_H1H2_THRESHOLD     = 1.5    # below this → ERR_SPECTRAL_ARTIFACT
+                                      # f5tts: 1.27 (FAIL), clean: 1.65-2.89 (PASS)
+# Cepstral mid-quefrency energy: normalized energy in pitch-period quefrency range.
+#   High value = excessive periodicity structure in spectrum → tonal artifact.
+ARTIFACT_CEP_MIDQ_THRESHOLD = 0.022  # above this → ERR_SPECTRAL_ARTIFACT
+                                      # f5tts: 0.028 (FAIL), clean: 0.015-0.019 (PASS)
+# SFM 4-8kHz (voiced): spectral flatness measure of high-freq in voiced frames.
+#   High value = broadband noise in HF → broadband artifact.
+ARTIFACT_SFM_HF_THRESHOLD   = 0.16   # above this → ERR_SPECTRAL_ARTIFACT
+                                      # f5tts: 0.172 (FAIL), clean: 0.130-0.138 (PASS)
+# Combined score normalization reference values (derived from clean model means)
+ARTIFACT_CLEAN_H1H2   = 1.9          # reference H1H2 for normalisation
+ARTIFACT_CLEAN_SFM_HF = 0.134        # reference SFM_4-8k for normalisation
+ARTIFACT_CLEAN_CEP    = 0.017        # reference Cep_MidQ for normalisation
+ARTIFACT_COMBINED_THRESHOLD = 0.25   # combined score above this → ERR_SPECTRAL_ARTIFACT
+
 # ── Speaker similarity thresholds ─────────────────────────────────────────────
 SPEAKER_SIM_THRESHOLD = 0.75
 

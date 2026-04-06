@@ -2,7 +2,7 @@
 Gate: Artifact / Vocoder Buzz Detector
 Env : base (python 3.13)
 
-Detects two types of audio artifacts in TTS/STS output:
+Detects three types of audio artifacts in TTS/STS output:
 
 1. Tonal / voiced artifacts  →  HNR (Harmonic-to-Noise Ratio)
    Metallic tonal buzz, vocoder overlay, non-harmonic resonance on voiced speech.
@@ -18,12 +18,29 @@ Detects two types of audio artifacts in TTS/STS output:
    Catches: FastSpeech2 broadband constant noise (median ~−44 dBFS).
    N/A when no real pauses are found (short segment, continuous speech).
 
+3. Spectral shape artifacts  →  combined score of three sub-metrics (librosa-based)
+   Catches subtle flow-matching vocoder artifacts not detected by HNR or pause floor.
+   Sub-metrics (all computed on voiced frames only, rms_db > −25):
+     a) H1/H2 ratio: amplitude of first harmonic / second harmonic (via pyin F0).
+        Low ratio = flattened harmonic slope → spectral shaping artifact.
+        Threshold < ARTIFACT_H1H2_THRESHOLD (1.5)
+     b) Cepstral mid-quefrency energy: normalised energy at pitch-period quefrencies.
+        High value = excessive periodic structure in spectrum → tonal artifact.
+        Threshold > ARTIFACT_CEP_MIDQ_THRESHOLD (0.022)
+     c) SFM 4-8kHz (voiced): spectral flatness measure of HF band in voiced frames.
+        High value = broadband noise in HF voiced region → broadband artifact.
+        Threshold > ARTIFACT_SFM_HF_THRESHOLD (0.16)
+   Combined score = avg of 3 normalised deviations from clean reference.
+   Threshold: combined > ARTIFACT_COMBINED_THRESHOLD (0.25) → ERR_SPECTRAL_ARTIFACT
+   Validated: f5tts=0.48 (FAIL), gtts/kokoro/samantha=−0.04–0.04 (PASS),
+              kokoro_v1/parler_mini=−0.11–−0.06 (PASS), fastspeech2=0.32 (FAIL).
+
 Voting: any error code → FAIL.  No errors → PASS.
 NEAR_MISS is not used — artifact presence is binary.
 
 Reference: not used for gating. Thresholds are absolute and data-validated
 against: gtts, kokoro, samantha (PASS), fastspeech2, HiFiGAN, Griffin-Lim,
-Hindi STS, Telugu STS (FAIL).
+Hindi STS, Telugu STS, f5tts (FAIL).
 
 Known limitation: subtle silence buzz at levels comparable to mic room noise
 (e.g. Hindi STS at ~−85 dBFS) is not detectable without a matched same-session
@@ -43,6 +60,12 @@ import config
 _SR        = 16000
 _FRAME_SZ  = 512
 _HOP_SZ    = 256
+
+# Constants for spectral shape metrics
+_SA_N_FFT  = 1024     # FFT size for spectral artifact metrics
+_SA_HOP    = 160      # hop size (10 ms)
+_SA_F_MIN  = 60       # minimum F0 (Hz) for pyin
+_SA_F_MAX  = 400      # maximum F0 (Hz) for pyin
 
 
 # ── HNR via parselmouth ────────────────────────────────────────────────────────
@@ -164,6 +187,190 @@ def compute_pause_median_db(audio_path: str) -> dict:
     }
 
 
+# ── Spectral shape artifact metrics ───────────────────────────────────────────
+
+def _voiced_mask(y: np.ndarray, sr: int = _SR, threshold_db: float = -25.0) -> np.ndarray:
+    """Return boolean mask of voiced frames (rms_db > threshold_db)."""
+    rms = librosa.feature.rms(y=y, frame_length=_SA_N_FFT, hop_length=_SA_HOP)[0]
+    rms_db = librosa.amplitude_to_db(rms + 1e-10)
+    return rms_db > threshold_db
+
+
+def compute_h1h2(y: np.ndarray, sr: int = _SR) -> float | None:
+    """
+    H1/H2 ratio: amplitude of first harmonic / second harmonic in voiced frames.
+
+    Uses librosa.pyin for F0 detection, then finds harmonic peaks in the mean
+    amplitude spectrum of pyin-voiced frames.
+
+    Returns the H1/H2 ratio, or None if insufficient voiced frames.
+
+    Interpretation: clean speech typically has H1/H2 ≈ 1.7–2.9.
+    Artifact-bearing models show H1/H2 < 1.5 (flattened harmonic slope).
+    """
+    try:
+        f0, voiced_flag, _ = librosa.pyin(
+            y, fmin=_SA_F_MIN, fmax=_SA_F_MAX, sr=sr,
+            frame_length=_SA_N_FFT, hop_length=_SA_HOP,
+        )
+    except Exception:
+        return None
+
+    if voiced_flag is None or voiced_flag.sum() < 5:
+        return None
+
+    S_amp = np.abs(librosa.stft(y, n_fft=_SA_N_FFT, hop_length=_SA_HOP))
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=_SA_N_FFT)
+
+    n_frames = min(S_amp.shape[1], len(voiced_flag))
+    f0_n = f0[:n_frames]
+    vf_n = voiced_flag[:n_frames]
+    valid = vf_n & ~np.isnan(f0_n)
+
+    if valid.sum() < 5:
+        return None
+
+    f0_med = float(np.median(f0_n[valid]))
+    mean_spec = S_amp[:, :n_frames][:, valid].mean(axis=1)
+
+    def _peak(target_hz: float) -> float:
+        idx = int(np.argmin(np.abs(freqs - target_hz)))
+        lo = max(0, idx - 2)
+        hi = min(len(mean_spec) - 1, idx + 2)
+        return float(mean_spec[lo:hi + 1].max())
+
+    h1 = _peak(f0_med)
+    h2 = _peak(2 * f0_med)
+    if h2 < 1e-10:
+        return None
+    return round(h1 / h2, 4)
+
+
+def compute_cep_midq(y: np.ndarray, sr: int = _SR) -> float | None:
+    """
+    Cepstral mid-quefrency energy (voiced frames).
+
+    For each voiced frame: compute log-power cepstrum, extract normalised energy
+    in the quefrency range corresponding to pitch periods (sr/400 … sr/60 samples).
+    Returns mean across voiced frames.
+
+    Higher values indicate stronger periodic structure in the spectrum consistent
+    with tonal/flow-matching vocoder artifacts.
+    Clean speech: ≈ 0.015–0.019.  Artifact-bearing: ≥ 0.022.
+    """
+    frame_len = int(0.025 * sr)  # 25 ms
+    hop_cep   = int(0.010 * sr)  # 10 ms
+
+    rms    = librosa.feature.rms(y=y, frame_length=frame_len, hop_length=hop_cep)[0]
+    rms_db = librosa.amplitude_to_db(rms + 1e-10)
+
+    min_period = sr // _SA_F_MAX   # ~40 samples at 400 Hz
+    max_period = sr // _SA_F_MIN   # ~267 samples at 60 Hz
+
+    vals = []
+    for i, db in enumerate(rms_db):
+        if db < -25.0:
+            continue
+        start = i * hop_cep
+        end   = start + frame_len
+        if end > len(y):
+            break
+        frame = y[start:end] * np.hanning(frame_len)
+        log_ps = np.log(np.abs(np.fft.rfft(frame, n=1024)) ** 2 + 1e-10)
+        cep    = np.fft.irfft(log_ps)
+        total  = float(np.sum(cep ** 2)) + 1e-10
+        vals.append(float(np.sum(cep[min_period:max_period] ** 2)) / total)
+
+    if not vals:
+        return None
+    return round(float(np.mean(vals)), 6)
+
+
+def compute_sfm_hf(y: np.ndarray, sr: int = _SR) -> float | None:
+    """
+    Spectral Flatness Measure in 4-8 kHz, voiced frames only.
+
+    Geometric mean / arithmetic mean of spectral power in the 4–8 kHz band,
+    computed per voiced frame and then averaged.
+
+    Higher SFM = more noise-like (flat spectrum) in the high-frequency region.
+    Clean speech: ≈ 0.130–0.138.  Artifact-bearing (broadband HF noise): ≥ 0.16.
+    """
+    S     = np.abs(librosa.stft(y, n_fft=_SA_N_FFT, hop_length=_SA_HOP)) ** 2 + 1e-20
+    freqs = librosa.fft_frequencies(sr=sr, n_fft=_SA_N_FFT)
+    vm    = _voiced_mask(y, sr)
+
+    n_frames = min(S.shape[1], len(vm))
+    S_v = S[:, :n_frames][:, vm[:n_frames]]
+
+    if S_v.shape[1] < 5:
+        return None
+
+    band = (freqs >= 4000) & (freqs < 8000)
+    if not band.any():
+        return None
+
+    S_band = S_v[band, :]
+    sfm_per_frame = (
+        np.exp(np.mean(np.log(S_band), axis=0))
+        / (S_band.mean(axis=0) + 1e-20)
+    )
+    return round(float(np.mean(sfm_per_frame)), 6)
+
+
+def compute_spectral_artifact_score(audio_path: str) -> dict:
+    """
+    Combined spectral artifact score from three sub-metrics.
+
+    Returns a dict with keys:
+      h1h2          — H1/H2 ratio (None if not computable)
+      cep_midq      — cepstral mid-quefrency energy (None if not computable)
+      sfm_hf        — SFM 4-8 kHz voiced (None if not computable)
+      combined      — combined artefact score (float or None)
+      sa_pass       — True = PASS, False = FAIL, None = not enough data
+    """
+    try:
+        y, sr = librosa.load(audio_path, sr=_SR)
+    except Exception as e:
+        return {
+            "h1h2": None, "cep_midq": None, "sfm_hf": None,
+            "combined": None, "sa_pass": None,
+            "sa_error": str(e),
+        }
+
+    h1h2     = compute_h1h2(y, sr)
+    cep_midq = compute_cep_midq(y, sr)
+    sfm_hf   = compute_sfm_hf(y, sr)
+
+    ref_h1h2 = getattr(config, "ARTIFACT_CLEAN_H1H2",   1.9)
+    ref_sfm  = getattr(config, "ARTIFACT_CLEAN_SFM_HF", 0.134)
+    ref_cep  = getattr(config, "ARTIFACT_CLEAN_CEP",    0.017)
+
+    scores = []
+    if h1h2 is not None:
+        scores.append((ref_h1h2 - h1h2) / ref_h1h2)
+    if sfm_hf is not None:
+        scores.append((sfm_hf - ref_sfm) / ref_sfm)
+    if cep_midq is not None:
+        scores.append((cep_midq - ref_cep) / ref_cep)
+
+    if len(scores) >= 2:
+        combined = round(float(np.mean(scores)), 4)
+        thresh   = getattr(config, "ARTIFACT_COMBINED_THRESHOLD", 0.25)
+        sa_pass  = combined <= thresh
+    else:
+        combined = None
+        sa_pass  = None   # insufficient data
+
+    return {
+        "h1h2"    : h1h2,
+        "cep_midq": cep_midq,
+        "sfm_hf"  : sfm_hf,
+        "combined": combined,
+        "sa_pass" : sa_pass,
+    }
+
+
 # ── Gate interface ─────────────────────────────────────────────────────────────
 
 def load_model():
@@ -240,12 +447,35 @@ def run_gate(model_state=None):
                       f"median={median_db:.1f} dBFS  "
                       f"→ {'PASS' if pause_pass else 'FAIL  ← ERR_BACKGROUND_STATIC'}")
 
+            # ── Step 4: Spectral shape artifact score ─────────────────────────
+            sa_result = compute_spectral_artifact_score(tts_path)
+            sa_pass    = sa_result.get("sa_pass")
+            sa_combined = sa_result.get("combined")
+            h1h2       = sa_result.get("h1h2")
+            cep_midq   = sa_result.get("cep_midq")
+            sfm_hf     = sa_result.get("sfm_hf")
+
+            def _fmt(v, spec):
+                return format(v, spec) if v is not None else "N/A"
+
+            if sa_combined is not None:
+                sa_str = (
+                    f"H1H2={_fmt(h1h2, '.2f')}, CepMidQ={_fmt(cep_midq, '.4f')},"
+                    f" SFM_HF={_fmt(sfm_hf, '.4f')}  combined={sa_combined:.3f}"
+                )
+                print(f"  SpectralShape: {sa_str}  "
+                      f"→ {'PASS' if sa_pass else 'FAIL  ← ERR_SPECTRAL_ARTIFACT'}")
+            else:
+                print(f"  SpectralShape: insufficient data  → N/A")
+
             # ── Voting ────────────────────────────────────────────────────────
             error_flags = []
             if hnr_mean is not None and not hnr_pass:
                 error_flags.append("ERR_VOICE_BUZZ")
             if pause_pass is not None and not pause_pass:
                 error_flags.append("ERR_BACKGROUND_STATIC")
+            if sa_pass is not None and not sa_pass:
+                error_flags.append("ERR_SPECTRAL_ARTIFACT")
 
             if error_flags:
                 result = "FAIL"
@@ -273,6 +503,12 @@ def run_gate(model_state=None):
                 "Pause_Frac"      : pause_result["real_pause_frac"],
                 "Pause_Median_DB" : median_db,
                 "Pause_Pass"      : ("PASS" if pause_pass else "FAIL") if pause_pass is not None else "N/A",
+                # Spectral shape artifact score
+                "SA_H1H2"         : h1h2,
+                "SA_CepMidQ"      : cep_midq,
+                "SA_SFM_HF"       : sfm_hf,
+                "SA_Combined"     : sa_combined,
+                "SA_Pass"         : ("PASS" if sa_pass else "FAIL") if sa_pass is not None else "N/A",
                 # Overall
                 "Error_Flags"     : flags_str,
                 "Pass"            : result,
@@ -295,6 +531,10 @@ def run_gate(model_state=None):
                                  if mdf["HNR_Mean"].notna().any() else None,
             "Mean_Pause_dBFS" : round(mdf["Pause_Median_DB"].dropna().mean(), 2)
                                  if mdf["Pause_Median_DB"].notna().any() else None,
+            "Mean_SA_H1H2"    : round(mdf["SA_H1H2"].dropna().mean(), 3)
+                                 if mdf["SA_H1H2"].notna().any() else None,
+            "Mean_SA_Combined": round(mdf["SA_Combined"].dropna().mean(), 3)
+                                 if mdf["SA_Combined"].notna().any() else None,
             "Error_Flags"     : "; ".join(
                                  f for f in mdf["Error_Flags"].dropna() if f
                                  ) or "—",
@@ -308,12 +548,13 @@ def run_gate(model_state=None):
 def print_results(df, summary_df):
     import pandas as pd
     pd.set_option("display.max_columns", None)
-    pd.set_option("display.width", 220)
+    pd.set_option("display.width", 260)
     print("\n========== PER-SEGMENT RESULTS ==========")
     print(df[[
         "Model", "Sample", "Duration_s",
         "HNR_Mean", "HNR_Pass",
         "Real_Pauses", "Pause_Median_DB", "Pause_Pass",
+        "SA_H1H2", "SA_CepMidQ", "SA_SFM_HF", "SA_Combined", "SA_Pass",
         "Error_Flags", "Pass", "Flag",
     ]].to_string(index=False))
 
@@ -326,6 +567,8 @@ def print_results(df, summary_df):
     print(f"  Pause_Median  > {getattr(config, 'ARTIFACT_SILENCE_MEDIAN_DB', -55.0):.0f} dBFS"
           f"  → ERR_BACKGROUND_STATIC (broadband noise floor in pauses)")
     print(f"  Pause_Pass=N/A → no real pauses ≥160ms (short segment or continuous speech)")
+    print(f"  SA_Combined   > {getattr(config, 'ARTIFACT_COMBINED_THRESHOLD', 0.25):.2f}"
+          f"       → ERR_SPECTRAL_ARTIFACT (H1/H2 + cepstral + SFM_HF composite)")
 
 
 def save_results(df, summary_df, output_dir):
