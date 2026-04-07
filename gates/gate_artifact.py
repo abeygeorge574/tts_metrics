@@ -354,19 +354,13 @@ def compute_spectral_artifact_score(audio_path: str) -> dict:
     if cep_midq is not None:
         scores.append((cep_midq - ref_cep) / ref_cep)
 
-    # H1/H2 individual gate: if H1/H2 is below its own threshold, fail regardless
-    # of the combined score. This prevents the averaging from diluting a strong
-    # harmonic-slope signal when the other two sub-metrics are neutral.
-    h1h2_thresh = getattr(config, "ARTIFACT_H1H2_THRESHOLD", 1.5)
-    h1h2_individual_fail = (h1h2 is not None) and (h1h2 < h1h2_thresh)
-
     if len(scores) >= 2:
         combined = round(float(np.mean(scores)), 4)
         thresh   = getattr(config, "ARTIFACT_COMBINED_THRESHOLD", 0.30)
-        sa_pass  = (combined <= thresh) and not h1h2_individual_fail
+        sa_pass  = combined <= thresh
     else:
         combined = None
-        sa_pass  = None if not h1h2_individual_fail else False
+        sa_pass  = None
 
     return {
         "h1h2"    : h1h2,
@@ -389,9 +383,10 @@ def run_gate(model_state=None):
     MODELS_DIR    = config.MODELS_DIR
     REFERENCE_DIR = config.REFERENCE_DIR   # not used for gating — kept for CSV info
 
-    HNR_THRESHOLD    = getattr(config, "ARTIFACT_HNR_ABS_THRESHOLD",   8.0)
-    PAUSE_DB_THRESH  = getattr(config, "ARTIFACT_SILENCE_MEDIAN_DB", -55.0)
-    MIN_SEG_DUR      = getattr(config, "MIN_SEGMENT_DURATION",          2.0)
+    HNR_THRESHOLD      = getattr(config, "ARTIFACT_HNR_ABS_THRESHOLD",    8.0)
+    PAUSE_FAIL_THRESH  = getattr(config, "ARTIFACT_SILENCE_FAIL_DB",    -45.0)
+    PAUSE_WARN_THRESH  = getattr(config, "ARTIFACT_SILENCE_WARN_DB",    -58.0)
+    MIN_SEG_DUR        = getattr(config, "MIN_SEGMENT_DURATION",          2.0)
 
     if not os.path.exists(MODELS_DIR):
         raise FileNotFoundError(f"Models folder not found: {MODELS_DIR}")
@@ -443,15 +438,26 @@ def run_gate(model_state=None):
 
             if pause_result["silence_na"]:
                 pause_pass = None
+                pause_warn = False
                 median_db  = None
                 print(f"  Pause  : no real pauses ≥160ms detected  → N/A")
             else:
                 median_db  = pause_result["median_db"]
-                pause_pass = median_db <= PAUSE_DB_THRESH
+                if median_db > PAUSE_FAIL_THRESH:
+                    pause_pass = False
+                    pause_warn = False
+                    pause_label = "FAIL  ← ERR_BACKGROUND_STATIC"
+                elif median_db > PAUSE_WARN_THRESH:
+                    pause_pass = True
+                    pause_warn = True
+                    pause_label = "WARN  ← WARN_SILENCE_FLOOR"
+                else:
+                    pause_pass = True
+                    pause_warn = False
+                    pause_label = "PASS"
                 print(f"  Pause  : {pause_result['n_real_pauses']} pauses "
                       f"({pause_result['real_pause_frac']:.0%} of audio)  "
-                      f"median={median_db:.1f} dBFS  "
-                      f"→ {'PASS' if pause_pass else 'FAIL  ← ERR_BACKGROUND_STATIC'}")
+                      f"median={median_db:.1f} dBFS  → {pause_label}")
 
             # ── Step 4: Spectral shape artifact score ─────────────────────────
             sa_result = compute_spectral_artifact_score(tts_path)
@@ -475,11 +481,15 @@ def run_gate(model_state=None):
                 print(f"  SpectralShape: insufficient data  → N/A")
 
             # ── Voting ────────────────────────────────────────────────────────
+            # ERR_* → hard FAIL.  WARN_* → PASS with advisory flag.
             error_flags = []
+            warn_flags  = []
             if hnr_mean is not None and not hnr_pass:
                 error_flags.append("ERR_VOICE_BUZZ")
             if pause_pass is not None and not pause_pass:
                 error_flags.append("ERR_BACKGROUND_STATIC")
+            elif pause_warn:
+                warn_flags.append("WARN_SILENCE_FLOOR")
             if sa_pass is not None and not sa_pass:
                 error_flags.append("ERR_SPECTRAL_ARTIFACT")
 
@@ -490,7 +500,8 @@ def run_gate(model_state=None):
             else:
                 result = "PASS"
 
-            flags_str = ",".join(error_flags) if error_flags else ""
+            all_flags = error_flags + warn_flags
+            flags_str = ",".join(all_flags) if all_flags else ""
             if flag:
                 flags_str = f"{flag},{flags_str}" if flags_str else flag
 
@@ -508,7 +519,7 @@ def run_gate(model_state=None):
                 "Real_Pauses"     : pause_result["n_real_pauses"],
                 "Pause_Frac"      : pause_result["real_pause_frac"],
                 "Pause_Median_DB" : median_db,
-                "Pause_Pass"      : ("PASS" if pause_pass else "FAIL") if pause_pass is not None else "N/A",
+                "Pause_Pass"      : ("WARN" if pause_warn else ("PASS" if pause_pass else "FAIL")) if pause_pass is not None else "N/A",
                 # Spectral shape artifact score
                 "SA_H1H2"         : h1h2,
                 "SA_CepMidQ"      : cep_midq,
@@ -570,8 +581,10 @@ def print_results(df, summary_df):
     print("\n========== GUIDE ==========")
     print(f"  HNR_Mean      < {getattr(config, 'ARTIFACT_HNR_ABS_THRESHOLD', 8.0):.0f} dB"
           f"   → ERR_VOICE_BUZZ       (tonal/metallic buzz on voiced speech)")
-    print(f"  Pause_Median  > {getattr(config, 'ARTIFACT_SILENCE_MEDIAN_DB', -55.0):.0f} dBFS"
-          f"  → ERR_BACKGROUND_STATIC (broadband noise floor in pauses)")
+    print(f"  Pause_Median  > {getattr(config, 'ARTIFACT_SILENCE_FAIL_DB', -45.0):.0f} dBFS"
+          f"  → ERR_BACKGROUND_STATIC (hard FAIL — clearly audible broadband noise in pauses)")
+    print(f"  Pause_Median  > {getattr(config, 'ARTIFACT_SILENCE_WARN_DB', -58.0):.0f} dBFS"
+          f"  → WARN_SILENCE_FLOOR    (present but subtle — not a FAIL)")
     print(f"  Pause_Pass=N/A → no real pauses ≥160ms (short segment or continuous speech)")
     print(f"  SA_Combined   > {getattr(config, 'ARTIFACT_COMBINED_THRESHOLD', 0.25):.2f}"
           f"       → ERR_SPECTRAL_ARTIFACT (H1/H2 + cepstral + SFM_HF composite)")

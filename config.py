@@ -80,9 +80,10 @@ ARTIFACT_MIN_PAUSE_FRAMES   = 10     # frames at hop=256/sr=16k → 160 ms minim
                                       # samantha_2 has 0 real pauses → N/A (correct)
 
 # Step 3: Median dBFS of real pause frames — background static
-ARTIFACT_SILENCE_MEDIAN_DB  = -55.0  # dBFS — above this → ERR_BACKGROUND_STATIC
-                                      # validated: kokoro −65 dBFS (PASS, 10 dB margin)
-                                      #            fastspeech2 −44 dBFS (FAIL, 11 dB margin)
+ARTIFACT_SILENCE_FAIL_DB    = -45.0  # dBFS — above this → ERR_BACKGROUND_STATIC (hard FAIL)
+                                      # validated: fastspeech2 −40 to −44 dBFS (FAIL)
+ARTIFACT_SILENCE_WARN_DB    = -58.0  # dBFS — above this → WARN_SILENCE_FLOOR (soft, not a FAIL)
+                                      # kokoro_v1 −46 to −55 dBFS (WARN), kokoro −64 dBFS (PASS)
 
 # Step 4: Spectral shape artifact detection (catches f5tts-class artifacts)
 # These three metrics combined detect subtle vocoder/flow-matching artifacts.
@@ -102,9 +103,10 @@ ARTIFACT_SFM_HF_THRESHOLD   = 0.16   # above this → ERR_SPECTRAL_ARTIFACT
 ARTIFACT_CLEAN_H1H2   = 1.9          # reference H1H2 for normalisation
 ARTIFACT_CLEAN_SFM_HF = 0.134        # reference SFM_4-8k for normalisation
 ARTIFACT_CLEAN_CEP    = 0.017        # reference Cep_MidQ for normalisation
-ARTIFACT_COMBINED_THRESHOLD = 0.30   # combined score above this → ERR_SPECTRAL_ARTIFACT
-                                      # raised 0.25→0.30: prevents sub-perceptual HF noise trips
-                                      # F5-TTS at 0.43 still fails with ample margin
+ARTIFACT_COMBINED_THRESHOLD = 0.15   # combined score above this → ERR_SPECTRAL_ARTIFACT
+                                      # clean models max: 0.073 (kokoro); artifact min: 0.179 (fastspeech2)
+                                      # H1/H2 individual gate removed (caused false positives on edge-tts)
+                                      # lowered 0.30→0.15: catches all fastspeech2 samples w/ ample margin
 
 # ── Speaker similarity thresholds ─────────────────────────────────────────────
 SPEAKER_SIM_THRESHOLD = 0.75

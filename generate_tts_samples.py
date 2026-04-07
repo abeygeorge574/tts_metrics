@@ -4,19 +4,23 @@ generate_tts_samples.py — Generate TTS outputs from multiple SOTA models.
 Writes to data/models/<model_name>/sample_{1..5}.wav
 
 Models:
-  - f5tts       : F5-TTS (zero-shot voice cloning from enrollment/speaker.wav)
-  - kokoro      : Kokoro ONNX (high-quality English TTS, no cloning)
-  - parler      : Parler-TTS mini (instruction-conditioned)
+  - f5tts          : F5-TTS (zero-shot voice cloning from enrollment/speaker.wav)
+  - kokoro         : Kokoro ONNX (high-quality English TTS, no cloning)
+  - parler         : Parler-TTS mini (instruction-conditioned)
+  - edge_tts_ava   : Microsoft edge-tts en-US-AvaNeural (neural, no cloning)
+  - edge_tts_andrew: Microsoft edge-tts en-US-AndrewNeural (neural, no cloning)
 
 Usage:
   conda activate base
   python generate_tts_samples.py
-  python generate_tts_samples.py --models f5tts kokoro
+  python generate_tts_samples.py --models f5tts kokoro edge_tts_ava
 """
 
+import asyncio
 import os
 import sys
 import argparse
+import subprocess
 import numpy as np
 import soundfile as sf
 
@@ -119,12 +123,57 @@ def generate_parler():
     print("Parler-TTS done.")
 
 
+# ── Edge-TTS ──────────────────────────────────────────────────────────────────
+
+def _generate_edge_tts(voice: str, out_dir: str):
+    """Generate 5 samples with edge-tts (requires ffmpeg on PATH)."""
+    try:
+        import edge_tts
+    except ImportError:
+        print("edge-tts not installed: pip install edge-tts")
+        return
+
+    os.makedirs(out_dir, exist_ok=True)
+
+    async def _run():
+        for i, text in enumerate(SENTENCES, 1):
+            path   = os.path.join(out_dir, f"sample_{i}.wav")
+            tmp_mp3 = path.replace(".wav", "_tmp.mp3")
+            communicate = edge_tts.Communicate(text, voice)
+            await communicate.save(tmp_mp3)
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", tmp_mp3, "-ar", "22050", path],
+                capture_output=True, check=True,
+            )
+            os.remove(tmp_mp3)
+            info = sf.info(path)
+            print(f"    saved: {path}  ({info.duration:.2f}s)")
+
+    asyncio.run(_run())
+
+
+def generate_edge_tts_ava():
+    print("\n=== edge-tts AvaNeural ===")
+    _generate_edge_tts("en-US-AvaNeural",
+                       os.path.join(MODELS_DIR, "edge_tts_ava"))
+    print("edge-tts AvaNeural done.")
+
+
+def generate_edge_tts_andrew():
+    print("\n=== edge-tts AndrewNeural ===")
+    _generate_edge_tts("en-US-AndrewNeural",
+                       os.path.join(MODELS_DIR, "edge_tts_andrew"))
+    print("edge-tts AndrewNeural done.")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 ALL_MODELS = {
-    "f5tts"  : generate_f5tts,
-    "kokoro" : generate_kokoro,
-    "parler" : generate_parler,
+    "f5tts"           : generate_f5tts,
+    "kokoro"          : generate_kokoro,
+    "parler"          : generate_parler,
+    "edge_tts_ava"    : generate_edge_tts_ava,
+    "edge_tts_andrew" : generate_edge_tts_andrew,
 }
 
 if __name__ == "__main__":
