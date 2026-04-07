@@ -80,8 +80,10 @@ ARTIFACT_MIN_PAUSE_FRAMES   = 10     # frames at hop=256/sr=16k → 160 ms minim
                                       # samantha_2 has 0 real pauses → N/A (correct)
 
 # Step 3: Median dBFS of real pause frames — background static
-ARTIFACT_SILENCE_FAIL_DB    = -45.0  # dBFS — above this → ERR_BACKGROUND_STATIC (hard FAIL)
-                                      # validated: fastspeech2 −40 to −44 dBFS (FAIL)
+ARTIFACT_SILENCE_FAIL_DB    = -35.0  # dBFS — above this → ERR_BACKGROUND_STATIC (hard FAIL)
+                                      # raised -45→-35: fastspeech2/parler separation done by
+                                      # ERR_SPECTRAL_ARTIFACT, not silence floor alone.
+                                      # parler_mini (-36 to -40) user-rated WARN → moved to WARN band.
 ARTIFACT_SILENCE_WARN_DB    = -58.0  # dBFS — above this → WARN_SILENCE_FLOOR (soft, not a FAIL)
                                       # kokoro_v1 −46 to −55 dBFS (WARN), kokoro −64 dBFS (PASS)
 
