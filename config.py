@@ -45,10 +45,10 @@ MUMBLE_THRESHOLD = -1.0   # log prob below this = low confidence word
 # ── NISQA thresholds ───────────────────────────────────────────────────────────
 NISQA_THRESHOLDS = {
     "MOS"           : 3.0,
-    "Noisiness"     : 3.5,
+    "Noisiness"     : 3.5,   # SNR=30dB already audibly bad → threshold is correct
     "Discontinuity" : 3.5,
-    "Coloration"    : 3.0,
-    "Loudness"      : 3.0,
+    "Coloration"    : 3.0,   # lp6kHz and hp500Hz both audibly bad at level_1 → correct
+    "Loudness"      : 3.4,   # raised 3.0→3.4: loud+9dB now fails (perceptually correct)
 }
 NISQA_DELTA_THRESHOLDS = {
     "MOS"           : -0.5,
@@ -136,13 +136,13 @@ POSITION_WEIGHT             = 0.3   # weight for position component of cost
 DURATION_WEIGHT             = 0.7   # weight for duration component of cost
 POSITION_SCALE              = 3.0   # seconds — position diff of this size = cost 1.0
 PAUSE_COUNT_THRESHOLD       = 20    # max acceptable pause count difference
-POSITION_OFFSET_THRESHOLD   = 0.5   # seconds — max acceptable median position offset
+POSITION_OFFSET_THRESHOLD   = 0.2   # seconds — tightened 0.5→0.2: dubbing sync requires tight pause alignment
 VAD_DURATION_RATIO_MIN      = 0.75  # TTS pause at least 75% as long as reference
 VAD_DURATION_RATIO_MAX      = 1.25  # TTS pause at most 125% as long as reference
 REF_PAUSES_PER_SECOND_LIMIT = 1.0   # pauses/sec above this = degraded
 
 # ── Amplitude thresholds ───────────────────────────────────────────────────────
-LUFS_TOLERANCE     = 4.0     # LUFS delta tolerance
+LUFS_TOLERANCE     = 6.5     # LUFS delta tolerance — raised 4→6.5: ±6dB passes, ±9dB fails
 LRA_TOLERANCE      = 3.0     # LUFS LRA delta tolerance
 CENTROID_TOLERANCE = 500     # Hz spectral centroid delta tolerance
 PEAK_LIMIT         = -1.0    # dBFS — TTS clipping threshold
