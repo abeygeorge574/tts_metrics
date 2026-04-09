@@ -15,7 +15,7 @@ import argparse
 import pandas as pd
 import numpy as np
 import jiwer
-from jiwer import Compose, ToLowerCase, SubstituteWords, RemovePunctuation, Strip, ReduceToListOfListOfWords
+from jiwer import Compose, ToLowerCase, SubstituteWords, RemovePunctuation, Strip, ReduceToListOfListOfWords, SubstituteRegexes
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
@@ -27,6 +27,9 @@ _TRANSFORM = Compose([
         "alright": "all right",
         "ok"     : "okay",
     }),
+    # Replace hyphens and em/en dashes with spaces BEFORE punctuation removal,
+    # so "out-of-syllabus" → "out of syllabus" rather than "outofsyllabus".
+    SubstituteRegexes({r"[-\u2013\u2014]": " "}),
     RemovePunctuation(),
     Strip(),
 ])
@@ -106,6 +109,7 @@ def compute_wer(reference_text, hypothesis_text):
     _ref_transform = Compose([
         ToLowerCase(),
         SubstituteWords({"alright": "all right", "ok": "okay"}),
+        SubstituteRegexes({r"[-\u2013\u2014]": " "}),
         RemovePunctuation(),
         Strip(),
         ReduceToListOfListOfWords()
@@ -113,6 +117,7 @@ def compute_wer(reference_text, hypothesis_text):
     _hyp_transform = Compose([
         ToLowerCase(),
         SubstituteWords({"alright": "all right", "ok": "okay"}),
+        SubstituteRegexes({r"[-\u2013\u2014]": " "}),
         RemovePunctuation(),
         Strip(),
         ReduceToListOfListOfWords()
@@ -290,6 +295,9 @@ def run_gate(model_state=None):
                 if intel_data["Low_Conf_Words"] != "—":
                     print(f"  Low Conf: {intel_data['Low_Conf_Words']}")
 
+                total_ref_words = wer_data["Hits"] + wer_data["Substitutions"] + wer_data["Deletions"]
+                hit_rate = round(wer_data["Hits"] / total_ref_words, 4) if total_ref_words > 0 else None
+
                 results.append({
                     "Model"               : model,
                     "Sample"              : sample_name,
@@ -299,7 +307,7 @@ def run_gate(model_state=None):
                     "Substitutions"       : wer_data["Substitutions"],
                     "Deletions"           : wer_data["Deletions"],
                     "Insertions"          : wer_data["Insertions"],
-                    "Hits"                : wer_data["Hits"],
+                    "Hit_Rate"            : hit_rate,
                     "Substitution_Detail" : wer_data["Substitution_Detail"],
                     "Deleted_Words"       : wer_data["Deleted_Words"],
                     "Inserted_Words"      : wer_data["Inserted_Words"],
@@ -322,7 +330,7 @@ def run_gate(model_state=None):
                     "Substitutions"       : 0,
                     "Deletions"           : 0,
                     "Insertions"          : 0,
-                    "Hits"                : 0,
+                    "Hit_Rate"            : None,
                     "Substitution_Detail" : "—",
                     "Deleted_Words"       : "—",
                     "Inserted_Words"      : "—",
@@ -344,10 +352,6 @@ def run_gate(model_state=None):
     print("\n\nAll evaluations complete.")
 
     df = pd.DataFrame(results)
-    df["Both_Pass"] = df.apply(
-        lambda row: "PASS" if (row["WER_Pass"] == "PASS" and row["Intel_Pass"] == "PASS") else "FAIL",
-        axis=1
-    )
 
     summary_rows = []
     for model in model_folders:
@@ -358,12 +362,10 @@ def run_gate(model_state=None):
 
         wer_pass_count   = (model_df["WER_Pass"]   == "PASS").sum()
         intel_pass_count = (model_df["Intel_Pass"] == "PASS").sum()
-        both_pass_count  = (model_df["Both_Pass"]  == "PASS").sum()
 
         summary_rows.append({
             "Model"              : model,
             "Segments"           : total,
-            "Both Pass Rate"     : f"{both_pass_count}/{total}",
             "WER Pass Rate"      : f"{wer_pass_count}/{total}",
             "Intel Pass Rate"    : f"{intel_pass_count}/{total}",
             "Median WER"         : round(wer_vals.median(), 4),
@@ -375,14 +377,14 @@ def run_gate(model_state=None):
         })
 
     summary_df = pd.DataFrame(summary_rows)
-    summary_df["_both_pass_num"] = summary_df["Both Pass Rate"].apply(lambda x: int(x.split("/")[0]))
+    summary_df["_wer_pass_num"] = summary_df["WER Pass Rate"].apply(lambda x: int(x.split("/")[0]))
     summary_df = summary_df.sort_values(
         # Dubbing priority: pass rate → dropped words → wrong words → worst segment →
         #                   typical quality → extra words → whisper confidence
-        by=["_both_pass_num", "Total Deletions", "Total Substitutions",
+        by=["_wer_pass_num", "Total Deletions", "Total Substitutions",
             "Median WER", "Max WER", "Total Insertions", "Median LogProb"],
         ascending=[False, True, True, True, True, True, False]
-    ).drop(columns=["_both_pass_num"])
+    ).drop(columns=["_wer_pass_num"])
 
     return df, summary_df
 
@@ -392,21 +394,22 @@ def print_results(df, summary_df):
     print("\n========== FULL PER-SEGMENT RESULTS ==========")
     print(df[[
         "Model", "Sample", "Reference", "Whisper",
-        "WER", "Substitutions", "Deletions", "Insertions",
+        "WER", "Substitutions", "Deletions", "Insertions", "Hit_Rate",
         "Substitution_Detail", "Deleted_Words", "Inserted_Words",
         "Mean_LogProb", "Intel_Pass_Rate", "Low_Conf_Words",
-        "WER_Pass", "Intel_Pass", "Both_Pass", "Deletion_Flag"
+        "WER_Pass", "Intel_Pass", "Deletion_Flag"
     ]].to_string(index=False))
 
     print("\n========== MODEL COMPARISON SUMMARY ==========")
     print(summary_df[[
-        "Model", "Both Pass Rate", "WER Pass Rate", "Intel Pass Rate",
+        "Model", "WER Pass Rate", "Intel Pass Rate",
         "Median WER", "Max WER", "Median LogProb",
         "Total Deletions", "Total Substitutions"
     ]].to_string(index=False))
 
     print("\n========== WHAT TO LOOK FOR ==========")
-    print("Both Pass Rate   → primary ranking — must pass WER and Intelligibility")
+    print("WER Pass Rate    → primary ranking — fraction of segments with WER ≤ threshold")
+    print("Hit_Rate         → correct words / total reference words (1.0 = perfect)")
     print("Median WER       → typical error level")
     print("Total Deletions  → words completely dropped — safety critical")
     print(f"\nThresholds: WER <= {config.WER_THRESHOLD} | Intel >= {config.INTEL_THRESHOLD} | Mumble log-prob < {config.MUMBLE_THRESHOLD}")

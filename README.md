@@ -363,7 +363,7 @@ This pipeline was built for **English TTS/STS output** evaluated against referen
 
 | Gate | Reliability | Detail |
 |---|---|---|
-| NISQA | Mostly reliable | Acoustic dimensions (noisiness, discontinuity, coloration, loudness) are language-agnostic. Absolute MOS scores are calibrated on English data so exact values may be slightly biased, but relative comparisons between models remain valid. |
+| NISQA | Mostly reliable | Acoustic dimensions (noisiness, discontinuity, coloration, loudness) are language-agnostic. Absolute MOS scores are calibrated on English data so exact values may be slightly biased, but relative comparisons between models remain valid. **When using a Hindi reference: NISQA on Hindi reference gives useful relative comparisons, not calibrated absolute scores.** Noisiness, Discontinuity, and Loudness deltas are valid cross-lingually. MOS and Coloration deltas carry a baseline offset from the language difference itself — a negative ΔMOS partly reflects language mismatch, not just quality difference. Treat MOS/Coloration deltas as directional signals only. |
 | SER | Moderate | emotion2vec_plus_large was trained on multilingual data and handles several languages. Hindi is not a primary training language — emotion label accuracy will be lower than on English, but coarse emotion groupings (happy vs sad vs angry) remain usable. Treat NEAR_MISS results with extra skepticism. |
 | Speaker Sim | Reliable | ECAPA-TDNN on VoxCeleb captures voice identity independent of language content. Speaker similarity scores are valid across languages as long as the same speaker is compared. |
 
