@@ -44,7 +44,7 @@ MUMBLE_THRESHOLD = -1.0   # log prob below this = low confidence word
 
 # ── NISQA thresholds ───────────────────────────────────────────────────────────
 NISQA_THRESHOLDS = {
-    "MOS"           : 3.0,
+    "MOS"           : 3.75,  # raised 3.0→3.75: floor calibrated from data (min passing MOS = 4.11)
     "Noisiness"     : 3.5,   # SNR=30dB already audibly bad → threshold is correct
     "Discontinuity" : 3.5,
     "Coloration"    : 3.0,   # lp6kHz and hp500Hz both audibly bad at level_1 → correct
