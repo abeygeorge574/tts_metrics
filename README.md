@@ -243,12 +243,32 @@ Each gate folder contains:
 | `gate_arousal_valence` | base | Dimensional emotion: arousal + valence delta vs reference | Δ arousal ≤ 0.15, Δ valence ≤ 0.15 |
 | `gate_pitch` | base | Pitch register + expressiveness (librosa pyin, 16 kHz) | Median Δ ≤ 30 Hz, Std ≥ 20 Hz, Std ratio ≥ 0.5× ref |
 | `gate_duration` | base | TTS/reference duration ratio | Within ±10% |
-| `gate_vad` | base | Pause count, position, duration (Hungarian matching) | Count Δ ≤ 20, Pos ≤ 0.5 s, Dur ratio 0.75–1.25 |
+| `gate_vad` | base | Pause count, position, duration (Hungarian matching) | Count Δ ≤ 20, Pos ≤ 0.2 s, Dur ratio 0.75–1.25 |
 | `gate_amplitude` | base | LUFS, LRA, spectral centroid, true peak | LUFS Δ ≤ 4, LRA Δ ≤ 3, Centroid Δ ≤ 500 Hz, Peak < −1 dBFS |
 | `gate_accent` | utmos | wav2vec2 accent proximity (American target) | Proximity ≥ 0.75 |
 | `gate_artifact` | base | HNR tonal buzz (parselmouth) + median dBFS of real pause frames | HNR ≥ 8 dB, pause median ≤ −55 dBFS |
 
 All thresholds are in `config.py` and can be adjusted without touching gate code.
+
+### WER model summary ranking
+
+The `model_summary.csv` for the WER gate ranks models by the following tiebreaker chain (dubbing priority order):
+
+| Priority | Column | Direction | Reasoning |
+|---|---|---|---|
+| 1 | Both Pass Rate | Higher = better | Must pass both WER and Intelligibility |
+| 2 | Total Deletions | Lower = better | Dropped words = character skips script lines — hardest to catch in post |
+| 3 | Total Substitutions | Lower = better | Wrong words said = character says something off-script |
+| 4 | Max WER | Lower = better | Worst single segment — one unintelligible segment blocks production |
+| 5 | Median WER | Lower = better | Typical quality across all segments |
+| 6 | Total Insertions | Lower = better | Extra words added — less critical than deletions |
+| 7 | Median LogProb | Closer to 0 = better | Whisper confidence — higher (less negative) means Whisper is more certain about its transcription |
+
+**Median LogProb interpretation**: Whisper assigns a log-probability to each word. The segment mean is reported. Clean, natural TTS clusters around −0.01 to −0.03. Values below −0.5 indicate Whisper is guessing. speecht5_griffinlim at −1.58 means Whisper has almost no confidence — it is transcribing noise.
+
+**Intel_Pass_Rate** is the per-segment fraction of words with log-prob above `MUMBLE_THRESHOLD` (default −1.0). A segment passes intelligibility if `Intel_Pass_Rate ≥ INTEL_THRESHOLD` (default 0.85) — i.e. at least 85% of words are high-confidence.
+
+---
 
 ### SER near-miss detection
 
@@ -305,7 +325,7 @@ automatically split long audio into equal-length chunks and aggregate:
 | `PITCH_STD_ABS_THRESHOLD` | 20.0 Hz | Min TTS pitch std (expressiveness floor) |
 | `PITCH_STD_RATIO_THRESHOLD` | 0.5 | TTS std must be ≥ 0.5× reference std |
 | `DURATION_TOLERANCE` | 0.10 | ±10% duration ratio tolerance |
-| `LUFS_TOLERANCE` | 4.0 | Max LUFS delta |
+| `LUFS_TOLERANCE` | 6.5 | Max LUFS delta (±6 dB passes, ±9 dB fails — perceptually calibrated) |
 | `LRA_TOLERANCE` | 3.0 | Max LRA delta |
 | `CENTROID_TOLERANCE` | 500 Hz | Max spectral centroid delta |
 | `ACCENT_TARGET_THRESHOLD` | 0.75 | Min American accent proximity |

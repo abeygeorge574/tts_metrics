@@ -133,15 +133,19 @@ def compute_wer(reference_text, hypothesis_text):
 
     for chunk in out.alignments[0]:
         if chunk.type == "substitute":
-            ref_w = ref_words[chunk.ref_start_idx] if chunk.ref_start_idx < len(ref_words) else "?"
-            hyp_w = hyp_words[chunk.hyp_start_idx] if chunk.hyp_start_idx < len(hyp_words) else "?"
-            substitution_pairs.append(f"{ref_w}→{hyp_w}")
+            for i in range(chunk.ref_start_idx, chunk.ref_end_idx):
+                ref_w = ref_words[i] if i < len(ref_words) else "?"
+                hyp_i = chunk.hyp_start_idx + (i - chunk.ref_start_idx)
+                hyp_w = hyp_words[hyp_i] if hyp_i < len(hyp_words) else "?"
+                substitution_pairs.append(f"{ref_w}→{hyp_w}")
         elif chunk.type == "delete":
-            if chunk.ref_start_idx < len(ref_words):
-                deleted_words.append(ref_words[chunk.ref_start_idx])
+            for i in range(chunk.ref_start_idx, chunk.ref_end_idx):
+                if i < len(ref_words):
+                    deleted_words.append(ref_words[i])
         elif chunk.type == "insert":
-            if chunk.hyp_start_idx < len(hyp_words):
-                inserted_words.append(hyp_words[chunk.hyp_start_idx])
+            for i in range(chunk.hyp_start_idx, chunk.hyp_end_idx):
+                if i < len(hyp_words):
+                    inserted_words.append(hyp_words[i])
 
     return {
         "WER"                : round(out.wer, 4),
@@ -371,13 +375,14 @@ def run_gate(model_state=None):
         })
 
     summary_df = pd.DataFrame(summary_rows)
-    summary_df["_both_pass_num"]  = summary_df["Both Pass Rate"].apply(lambda x: int(x.split("/")[0]))
-    summary_df["_wer_pass_num"]   = summary_df["WER Pass Rate"].apply(lambda x: int(x.split("/")[0]))
-    summary_df["_intel_pass_num"] = summary_df["Intel Pass Rate"].apply(lambda x: int(x.split("/")[0]))
+    summary_df["_both_pass_num"] = summary_df["Both Pass Rate"].apply(lambda x: int(x.split("/")[0]))
     summary_df = summary_df.sort_values(
-        by=["_both_pass_num", "_wer_pass_num", "_intel_pass_num", "Total Deletions", "Median WER", "Max WER"],
-        ascending=[False, False, False, True, True, True]
-    ).drop(columns=["_both_pass_num", "_wer_pass_num", "_intel_pass_num"])
+        # Dubbing priority: pass rate → dropped words → wrong words → worst segment →
+        #                   typical quality → extra words → whisper confidence
+        by=["_both_pass_num", "Total Deletions", "Total Substitutions",
+            "Max WER", "Median WER", "Total Insertions", "Median LogProb"],
+        ascending=[False, True, True, True, True, True, False]
+    ).drop(columns=["_both_pass_num"])
 
     return df, summary_df
 
