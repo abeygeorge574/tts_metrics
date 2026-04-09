@@ -388,8 +388,9 @@ def run_gate(model_state=None):
     summary_df["_mean_delta_mos"]    = summary_df["Mean ΔMOS"].fillna(-999)
 
     summary_df = summary_df.sort_values(
-        by=["_clean_pass_num", "_degraded_pass_num", "_mean_delta_mos"],
-        ascending=[False, False, False]
+        # Priority: clean pass rate → degraded pass rate → mean delta MOS → median MOS
+        by=["_clean_pass_num", "_degraded_pass_num", "_mean_delta_mos", "Median MOS"],
+        ascending=[False, False, False, False]
     ).drop(columns=["_clean_pass_num", "_degraded_pass_num", "_mean_delta_mos"])
 
     return df, summary_df
