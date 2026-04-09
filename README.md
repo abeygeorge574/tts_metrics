@@ -256,13 +256,34 @@ The `model_summary.csv` for the WER gate ranks models by the following tiebreake
 
 | Priority | Column | Direction | Reasoning |
 |---|---|---|---|
-| 1 | Both Pass Rate | Higher = better | Must pass both WER and Intelligibility |
+| 1 | WER Pass Rate | Higher = better | Primary gate — fraction of segments with WER ≤ threshold |
 | 2 | Total Deletions | Lower = better | Dropped words = character skips script lines — hardest to catch in post |
 | 3 | Total Substitutions | Lower = better | Wrong words said = character says something off-script |
 | 4 | Median WER | Lower = better | Typical quality — consistent degradation across many lines is worse than one bad segment |
 | 5 | Max WER | Lower = better | Worst single segment — one outlier failure |
 | 6 | Total Insertions | Lower = better | Extra words added — less critical than deletions |
 | 7 | Median LogProb | Closer to 0 = better | Whisper confidence — higher (less negative) means Whisper is more certain about its transcription |
+
+Intel Pass Rate is kept as a separate column for reference but does not affect ranking — it is directionally useful but not reliable enough to gate on its own.
+
+### NISQA model summary ranking
+
+The `model_summary.csv` for the NISQA gate ranks models by the following tiebreaker chain:
+
+| Priority | Column | Direction | Reasoning |
+|---|---|---|---|
+| 1 | Clean Pass Rate | Higher = better | Segments where reference quality is good enough to trust the delta comparison |
+| 2 | Degraded Pass Rate | Higher = better | Segments where reference was degraded (REF_QUALITY) or short — delta was skipped, absolute only |
+| 3 | Mean ΔMOS | Higher = better | Average MOS delta vs reference — higher means TTS is closer to or better than reference quality |
+| 4 | Median MOS | Higher = better | Final tiebreaker — absolute quality floor when everything else is equal |
+
+**Why this order:**
+- Clean segments are trustworthy comparisons (reference quality verified). Degraded segments have uncertain deltas so they matter less.
+- Mean ΔMOS ranks by how much quality was preserved or gained relative to the reference.
+- Median MOS as final tiebreaker catches the case where two models have the same pass rate and same delta — the one with higher raw scores wins.
+- A negative ΔMOS is always a concern but acceptable up to the configured threshold (−0.5 for MOS) because cross-lingual runs have a language-mismatch baseline offset — English TTS vs Hindi reference will naturally show some delta even at perfect quality.
+
+---
 
 **Median LogProb interpretation**: Whisper assigns a log-probability to each word. The segment mean is reported. Clean, natural TTS clusters around −0.01 to −0.03. Values below −0.5 indicate Whisper is guessing. speecht5_griffinlim at −1.58 means Whisper has almost no confidence — it is transcribing noise.
 
@@ -288,9 +309,28 @@ The near-miss margin is controlled by `SER_NEAR_MISS_MARGIN = 0.10` in `config.p
 Segments shorter than `MIN_SEGMENT_DURATION` (default 2.0 s) in `config.py` are:
 - Still scored normally — the metric value is real
 - Flagged as `SHORT_SEGMENT` in the `Flag` column
-- Counted as degraded in the pass-rate calculation
+- Counted as **degraded** in the pass-rate calculation (same bucket as REF_QUALITY)
 
 This is relevant for fast-switching dialogue lines.
+
+**Minimum recommended segment lengths per gate:**
+
+| Gate | Hard minimum | Notes |
+|---|---|---|
+| NISQA | 0.5 s | Internal chunk minimum; anything below is skipped by chunker |
+| WER | ~1 s | Whisper transcription degrades below 1 s |
+| Pitch | ~1 s | pyin needs enough voiced frames for a stable F0 estimate |
+| Duration | any | Reads file header only |
+| VAD | any | ffmpeg silence detection works on any length |
+| Amplitude | ~1 s | LUFS measurement needs ~1 s for a stable integrated value |
+| SER | ~1 s | emotion2vec needs enough audio for a reliable prediction |
+| Arousal/Valence | ~1 s | Same model as SER |
+| Speaker Sim | ~1 s | ECAPA-TDNN embedding is stable from ~1 s |
+| UTMOS | ~1 s | Trained on ~3–10 s utterances; very short clips score lower |
+| Accent | ~2 s | Needs enough audio for phoneme-level accent features |
+| Artifact | ~0.5 s | Spectral analysis works on very short clips |
+
+The global `MIN_SEGMENT_DURATION = 2.0 s` flag covers all gates conservatively. Segments above 2 s are reliable for all metrics. Segments between 0.5–2 s are still scored but results should be treated with caution.
 
 ### Long segment chunking
 
