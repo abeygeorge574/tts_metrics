@@ -259,8 +259,8 @@ The `model_summary.csv` for the WER gate ranks models by the following tiebreake
 | 1 | Both Pass Rate | Higher = better | Must pass both WER and Intelligibility |
 | 2 | Total Deletions | Lower = better | Dropped words = character skips script lines — hardest to catch in post |
 | 3 | Total Substitutions | Lower = better | Wrong words said = character says something off-script |
-| 4 | Max WER | Lower = better | Worst single segment — one unintelligible segment blocks production |
-| 5 | Median WER | Lower = better | Typical quality across all segments |
+| 4 | Median WER | Lower = better | Typical quality — consistent degradation across many lines is worse than one bad segment |
+| 5 | Max WER | Lower = better | Worst single segment — one outlier failure |
 | 6 | Total Insertions | Lower = better | Extra words added — less critical than deletions |
 | 7 | Median LogProb | Closer to 0 = better | Whisper confidence — higher (less negative) means Whisper is more certain about its transcription |
 

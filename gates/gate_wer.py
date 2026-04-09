@@ -380,7 +380,7 @@ def run_gate(model_state=None):
         # Dubbing priority: pass rate → dropped words → wrong words → worst segment →
         #                   typical quality → extra words → whisper confidence
         by=["_both_pass_num", "Total Deletions", "Total Substitutions",
-            "Max WER", "Median WER", "Total Insertions", "Median LogProb"],
+            "Median WER", "Max WER", "Total Insertions", "Median LogProb"],
         ascending=[False, True, True, True, True, True, False]
     ).drop(columns=["_both_pass_num"])
 
