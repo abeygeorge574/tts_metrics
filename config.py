@@ -166,8 +166,9 @@ AROUSAL_DELTA_THRESHOLD = 0.15   # max |ref_arousal - out_arousal| — above = e
 VALENCE_DELTA_THRESHOLD = 0.15   # max |ref_valence - out_valence| — above = tone polarity shifted
 
 # ── Accent thresholds ──────────────────────────────────────────────────────────
-ACCENT_TARGET           = "us"   # dima806 label for American English
-ACCENT_TARGET_THRESHOLD = 0.60   # P(us) >= 0.60 to pass — TTS models should score 0.7-0.9
+ACCENT_TARGET_LABELS    = ["us", "canada"]   # North American English — treated as same accent for dubbing
+ACCENT_TARGET_THRESHOLD = 0.75              # P(us) + P(canada) >= 0.75 to pass
+ACCENT_TARGET           = "us"              # legacy key, not used by gate logic
 ACCENT_REFERENCES = {  # kept for reference, not used by classifier-based gate
     "english": os.path.join(ACCENT_BASE_DIR, "accent_reference", "english1.mp3"),
     "hebrew" : os.path.join(ACCENT_BASE_DIR, "accent_reference", "hebrew1.mp3"),

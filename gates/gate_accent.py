@@ -39,10 +39,10 @@ def run_gate(model_state=None):
     if model_state is None:
         model_state = load_model()
 
-    clf        = model_state["clf"]
-    MODELS_DIR = model_state.get("models_dir") or config.MODELS_DIR
-    TARGET     = config.ACCENT_TARGET          # e.g. "us"
-    THRESHOLD  = config.ACCENT_TARGET_THRESHOLD
+    clf           = model_state["clf"]
+    MODELS_DIR    = model_state.get("models_dir") or config.MODELS_DIR
+    TARGET_LABELS = config.ACCENT_TARGET_LABELS   # e.g. ["us", "canada"]
+    THRESHOLD     = config.ACCENT_TARGET_THRESHOLD
 
     if not os.path.exists(MODELS_DIR):
         raise FileNotFoundError(f"Models folder not found: {MODELS_DIR}")
@@ -67,22 +67,22 @@ def run_gate(model_state=None):
             audio_path  = os.path.join(model_path, wav_file)
 
             try:
-                scores      = classify_file(audio_path, clf)
-                target_prob = scores.get(TARGET, 0.0)
-                top_label   = max(scores, key=scores.get)
-                passed      = target_prob >= THRESHOLD
-                final_pass  = "PASS" if passed else f"FAIL (top={top_label} {scores.get(top_label,0):.2f})"
+                scores       = classify_file(audio_path, clf)
+                target_prob  = round(sum(scores.get(l, 0.0) for l in TARGET_LABELS), 4)
+                top_label    = max(scores, key=scores.get)
+                passed       = target_prob >= THRESHOLD
+                label_str    = "+".join(TARGET_LABELS)
+                final_pass   = "PASS" if passed else f"FAIL (top={top_label} {scores.get(top_label,0):.2f})"
 
-                print(f"  {sample_name} | {TARGET}={target_prob:.3f} | top={top_label} → {final_pass}")
+                print(f"  {sample_name} | P({label_str})={target_prob:.3f} | top={top_label} → {final_pass}")
 
                 row = {
-                    "Model"       : model,
-                    "Sample"      : sample_name,
-                    "Top_Label"   : top_label,
-                    "Target_Prob" : target_prob,
-                    "Final_Pass"  : final_pass,
+                    "Model"        : model,
+                    "Sample"       : sample_name,
+                    "Top_Label"    : top_label,
+                    "Target_Prob"  : target_prob,
+                    "Final_Pass"   : final_pass,
                 }
-                # add top-3 label probs
                 for r in sorted(scores.items(), key=lambda x: -x[1])[:3]:
                     row[f"P_{r[0]}"] = r[1]
 
@@ -106,28 +106,30 @@ def run_gate(model_state=None):
         med_prob   = mdf["Target_Prob"].median()
         top_labels = mdf["Top_Label"].value_counts().to_dict()
         top_str    = ", ".join(f"{k}:{v}" for k, v in top_labels.items())
+        label_str  = "+".join(config.ACCENT_TARGET_LABELS)
 
         summary_rows.append({
-            "Model"           : model,
-            "Segments"        : total,
-            "Pass_Rate"       : f"{passes}/{total}",
-            "Fails"           : fails,
-            f"Median_P_{TARGET}": round(med_prob, 4) if med_prob is not None else None,
-            "Top_Labels"      : top_str,
+            "Model"                    : model,
+            "Segments"                 : total,
+            "Pass_Rate"                : f"{passes}/{total}",
+            "Fails"                    : fails,
+            f"Median_P({label_str})"   : round(med_prob, 4) if med_prob is not None else None,
+            "Top_Labels"               : top_str,
         })
 
+    label_str  = "+".join(config.ACCENT_TARGET_LABELS)
     summary_df = pd.DataFrame(summary_rows).sort_values(
-        by=f"Median_P_{TARGET}", ascending=False
+        by=f"Median_P({label_str})", ascending=False
     )
     return df, summary_df
 
 
 def print_results(df, summary_df):
-    TARGET = config.ACCENT_TARGET
+    label_str = "+".join(config.ACCENT_TARGET_LABELS)
     print("\n========== MODEL COMPARISON SUMMARY ==========")
     print(summary_df.to_string(index=False))
-    print(f"\nThreshold: P({TARGET}) >= {config.ACCENT_TARGET_THRESHOLD}")
-    print(f"Target label: '{TARGET}'")
+    print(f"\nThreshold: P({label_str}) >= {config.ACCENT_TARGET_THRESHOLD}")
+    print(f"Target labels: {config.ACCENT_TARGET_LABELS}")
 
 
 def save_results(df, summary_df, output_dir):
