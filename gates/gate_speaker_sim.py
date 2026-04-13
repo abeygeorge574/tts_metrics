@@ -10,6 +10,12 @@ import os
 import sys
 import argparse
 
+# Clear SOCKS proxy env vars before httpx / huggingface_hub initialise —
+# macOS system SOCKS proxy causes httpx to fail without the socksio package.
+for _pvar in ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy",
+              "HTTP_PROXY", "http_proxy"):
+    os.environ.pop(_pvar, None)
+
 import torch
 import torchaudio
 import pandas as pd
@@ -106,7 +112,8 @@ def load_model():
     print(f"Speaker similarity device: {device}")
 
     classifier = EncoderClassifier.from_hparams(
-        source="speechbrain/spkrec-ecapa-voxceleb",
+        source=config.SPEAKER_SIM_WEIGHTS,
+        savedir=config.SPEAKER_SIM_WEIGHTS,
         run_opts={"device": device},
     )
 

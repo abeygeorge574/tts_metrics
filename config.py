@@ -122,8 +122,14 @@ ARTIFACT_COMBINED_THRESHOLD = 0.15   # combined score above this → ERR_SPECTRA
                                       # H1/H2 individual gate removed (caused false positives on edge-tts)
                                       # lowered 0.30→0.15: catches all fastspeech2 samples w/ ample margin
 
+SPEAKER_SIM_WEIGHTS = os.path.join(ROOT, "weights", "speaker_sim")
+
 # ── Speaker similarity thresholds ─────────────────────────────────────────────
-SPEAKER_SIM_THRESHOLD = 0.75
+# Calibrated from f5tts (voice cloning) vs generic TTS:
+#   f5tts (cloned from speaker.wav): 0.56–0.78 (median 0.62)
+#   generic TTS (not cloning):       -0.13–0.19 (all models)
+# 0.55 sits well above generic TTS ceiling (0.19) with 0.36 gap to spare.
+SPEAKER_SIM_THRESHOLD = 0.55
 
 # ── SER thresholds ─────────────────────────────────────────────────────────────
 SER_CONFIDENCE_THRESHOLD = 0.5
