@@ -160,8 +160,12 @@ def run_gate(model_state=None):
 
     classifier = model_state["classifier"]
 
-    MODELS_DIR      = model_state.get("models_dir")    or config.MODELS_DIR
-    REFERENCE_DIR   = model_state.get("ref_dir")       or config.REFERENCE_DIR
+    MODELS_DIR      = model_state.get("models_dir")      or config.MODELS_DIR
+    # ref_dir is INTENTIONALLY None by default — speaker_sim uses enrollment unless
+    # you explicitly pass --ref-dir with a directory containing same-speaker reference audio.
+    # Using gtts-proxy files from data/reference/ as reference would measure
+    # "does TTS sound like gtts?" which is meaningless for speaker identity.
+    REFERENCE_DIR   = model_state.get("ref_dir")         or None
     ENROLLMENT_FILE = model_state.get("enrollment_file") or os.path.join(config.ENROLLMENT_DIR, "speaker.wav")
 
     SPEAKER_SIM_THRESHOLD = config.SPEAKER_SIM_THRESHOLD
