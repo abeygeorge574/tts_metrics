@@ -166,12 +166,12 @@ AROUSAL_DELTA_THRESHOLD = 0.15   # max |ref_arousal - out_arousal| — above = e
 VALENCE_DELTA_THRESHOLD = 0.15   # max |ref_valence - out_valence| — above = tone polarity shifted
 
 # ── Accent thresholds ──────────────────────────────────────────────────────────
-ACCENT_TARGET           = "american"
+ACCENT_TARGET           = "english"
 ACCENT_TARGET_THRESHOLD = 0.75
 ACCENT_REFERENCES = {
-    "american": os.path.join(ACCENT_BASE_DIR, "accent_reference", "american.wav"),
-    "british" : os.path.join(ACCENT_BASE_DIR, "accent_reference", "british.wav"),
-    "indian"  : os.path.join(ACCENT_BASE_DIR, "accent_reference", "indian.wav"),
+    "english": os.path.join(ACCENT_BASE_DIR, "accent_reference", "english1.mp3"),
+    "hebrew" : os.path.join(ACCENT_BASE_DIR, "accent_reference", "hebrew1.mp3"),
+    "hindi"  : os.path.join(ACCENT_BASE_DIR, "accent_reference", "hindi1.mp3"),
 }
 
 # ── Conda environment names ────────────────────────────────────────────────────
