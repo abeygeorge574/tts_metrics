@@ -32,8 +32,8 @@ def get_duration(file_path):
 
 # ── Main gate ──────────────────────────────────────────────────────────────────
 def run_gate(model_state=None):
-    MODELS_DIR    = config.MODELS_DIR
-    REFERENCE_DIR = config.REFERENCE_DIR
+    MODELS_DIR    = (model_state or {}).get("models_dir") or config.MODELS_DIR
+    REFERENCE_DIR = (model_state or {}).get("ref_dir")    or config.REFERENCE_DIR
 
     DURATION_TOLERANCE = config.DURATION_TOLERANCE
     lower_bound        = 1.0 - DURATION_TOLERANCE
@@ -211,10 +211,18 @@ def save_results(df, summary_df, output_dir):
 # ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Duration ratio gate")
-    parser.add_argument("--output-dir", default=os.path.join(config.OUTPUT_DIR, "duration"))
+    parser.add_argument("--output-dir",  default=os.path.join(config.OUTPUT_DIR, "duration"))
+    parser.add_argument("--models-dir",  default=None, help="Override config.MODELS_DIR")
+    parser.add_argument("--ref-dir",     default=None, help="Override config.REFERENCE_DIR")
     args = parser.parse_args()
 
+    state = {}
+    if args.models_dir:
+        state["models_dir"] = os.path.abspath(args.models_dir)
+    if args.ref_dir:
+        state["ref_dir"] = os.path.abspath(args.ref_dir)
+
     load_model()
-    df, summary_df = run_gate()
+    df, summary_df = run_gate(state or None)
     print_results(df, summary_df)
     save_results(df, summary_df, args.output_dir)

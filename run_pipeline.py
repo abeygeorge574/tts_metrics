@@ -137,7 +137,6 @@ import config
 GATE_REGISTRY = [
     ("wer",              "gates/gate_wer.py",              "utmos"),
     ("nisqa",            "gates/gate_nisqa.py",            "base"),
-    ("utmos",            "gates/gate_utmos.py",            "utmos"),
     ("speaker_sim",      "gates/gate_speaker_sim.py",      "base"),
     ("ser",              "gates/gate_ser.py",              "base"),
     ("arousal_valence",  "gates/gate_arousal_valence.py",  "base"),
