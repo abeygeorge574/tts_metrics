@@ -168,6 +168,8 @@ VALENCE_DELTA_THRESHOLD = 0.15   # max |ref_valence - out_valence| — above = t
 # ── Accent thresholds ──────────────────────────────────────────────────────────
 ACCENT_TARGET_LABELS    = ["us", "canada"]   # North American English — treated as same accent for dubbing
 ACCENT_TARGET_THRESHOLD = 0.75              # P(us) + P(canada) >= 0.75 to pass
+ACCENT_NEAR_MISS_MARGIN = 0.07             # FAIL within this margin of threshold → NEAR_MISS
+ACCENT_LEAK_THRESHOLD   = 0.20             # non-target label above this while PASS → WARN_ACCENT_LEAK
 ACCENT_TARGET           = "us"              # legacy key, not used by gate logic
 ACCENT_REFERENCES = {  # kept for reference, not used by classifier-based gate
     "english": os.path.join(ACCENT_BASE_DIR, "accent_reference", "english1.mp3"),

@@ -67,12 +67,27 @@ def run_gate(model_state=None):
             audio_path  = os.path.join(model_path, wav_file)
 
             try:
-                scores       = classify_file(audio_path, clf)
-                target_prob  = round(sum(scores.get(l, 0.0) for l in TARGET_LABELS), 4)
-                top_label    = max(scores, key=scores.get)
-                passed       = target_prob >= THRESHOLD
-                label_str    = "+".join(TARGET_LABELS)
-                final_pass   = "PASS" if passed else f"FAIL (top={top_label} {scores.get(top_label,0):.2f})"
+                scores        = classify_file(audio_path, clf)
+                target_prob   = round(sum(scores.get(l, 0.0) for l in TARGET_LABELS), 4)
+                top_label     = max(scores, key=scores.get)
+                passed        = target_prob >= THRESHOLD
+                near_miss     = (not passed) and (target_prob >= THRESHOLD - config.ACCENT_NEAR_MISS_MARGIN)
+                label_str     = "+".join(TARGET_LABELS)
+
+                # Check if any non-target label is large (accent leak warning)
+                non_target_scores = {l: s for l, s in scores.items() if l not in TARGET_LABELS}
+                max_leak_label    = max(non_target_scores, key=non_target_scores.get) if non_target_scores else None
+                max_leak_score    = non_target_scores.get(max_leak_label, 0.0) if max_leak_label else 0.0
+                accent_leak       = passed and max_leak_score >= config.ACCENT_LEAK_THRESHOLD
+
+                if near_miss:
+                    final_pass = f"NEAR_MISS (top={top_label} {scores.get(top_label,0):.2f})"
+                elif not passed:
+                    final_pass = f"FAIL (top={top_label} {scores.get(top_label,0):.2f})"
+                elif accent_leak:
+                    final_pass = f"PASS_WARN (leak={max_leak_label} {max_leak_score:.2f})"
+                else:
+                    final_pass = "PASS"
 
                 print(f"  {sample_name} | P({label_str})={target_prob:.3f} | top={top_label} → {final_pass}")
 
@@ -101,8 +116,10 @@ def run_gate(model_state=None):
     for model in model_folders:
         mdf        = df[df["Model"] == model]
         total      = len(mdf)
-        passes     = (mdf["Final_Pass"] == "PASS").sum()
-        fails      = total - passes
+        passes     = mdf["Final_Pass"].isin(["PASS", "PASS_WARN"]).sum()
+        warns      = mdf["Final_Pass"].str.startswith("PASS_WARN").sum()
+        near_miss  = mdf["Final_Pass"].str.startswith("NEAR_MISS").sum()
+        fails      = mdf["Final_Pass"].str.startswith("FAIL").sum()
         med_prob   = mdf["Target_Prob"].median()
         top_labels = mdf["Top_Label"].value_counts().to_dict()
         top_str    = ", ".join(f"{k}:{v}" for k, v in top_labels.items())
@@ -112,6 +129,8 @@ def run_gate(model_state=None):
             "Model"                    : model,
             "Segments"                 : total,
             "Pass_Rate"                : f"{passes}/{total}",
+            "Warn"                     : warns,
+            "Near_Miss"                : near_miss,
             "Fails"                    : fails,
             f"Median_P({label_str})"   : round(med_prob, 4) if med_prob is not None else None,
             "Top_Labels"               : top_str,
@@ -131,7 +150,9 @@ def print_results(df, summary_df):
     label_str = "+".join(config.ACCENT_TARGET_LABELS)
     print("\n========== MODEL COMPARISON SUMMARY ==========")
     print(summary_df.to_string(index=False))
-    print(f"\nThreshold: P({label_str}) >= {config.ACCENT_TARGET_THRESHOLD}")
+    print(f"\nThreshold : P({label_str}) >= {config.ACCENT_TARGET_THRESHOLD}")
+    print(f"Near miss : FAIL but within {config.ACCENT_NEAR_MISS_MARGIN:.0%} of threshold")
+    print(f"PASS_WARN : passing but non-target label >= {config.ACCENT_LEAK_THRESHOLD:.0%}")
     print(f"Target labels: {config.ACCENT_TARGET_LABELS}")
 
 
