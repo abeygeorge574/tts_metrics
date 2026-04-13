@@ -144,7 +144,7 @@ GATE_REGISTRY = [
     ("duration",         "gates/gate_duration.py",         "base"),
     ("vad",              "gates/gate_vad.py",              "base"),
     ("amplitude",        "gates/gate_amplitude.py",        "base"),
-    ("accent",           "gates/gate_accent.py",           "utmos"),
+    ("accent",           "gates/gate_accent.py",           "base"),
     ("artifact",         "gates/gate_artifact.py",         "base"),
 ]
 
