@@ -20,7 +20,10 @@ import config
 
 # ── Device detection ───────────────────────────────────────────────────────────
 def _get_device():
-    """Return the best available torch device: cuda > mps > cpu."""
+    """Return the best available torch device: cuda > mps > cpu.
+    Set FORCE_SPEAKER_CPU=1 to skip GPU (needed in Metal-restricted sandboxes)."""
+    if os.environ.get("FORCE_SPEAKER_CPU"):
+        return "cpu"
     if torch.cuda.is_available():
         return "cuda"
     if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
@@ -150,9 +153,9 @@ def run_gate(model_state=None):
 
     classifier = model_state["classifier"]
 
-    MODELS_DIR      = config.MODELS_DIR
-    REFERENCE_DIR   = config.REFERENCE_DIR
-    ENROLLMENT_FILE = os.path.join(config.ENROLLMENT_DIR, "speaker.wav")
+    MODELS_DIR      = model_state.get("models_dir")    or config.MODELS_DIR
+    REFERENCE_DIR   = model_state.get("ref_dir")       or config.REFERENCE_DIR
+    ENROLLMENT_FILE = model_state.get("enrollment_file") or os.path.join(config.ENROLLMENT_DIR, "speaker.wav")
 
     SPEAKER_SIM_THRESHOLD = config.SPEAKER_SIM_THRESHOLD
 
@@ -320,10 +323,20 @@ def save_results(df, summary_df, output_dir):
 # ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Speaker similarity gate")
-    parser.add_argument("--output-dir", default=os.path.join(config.OUTPUT_DIR, "speaker_sim"))
+    parser.add_argument("--output-dir",      default=os.path.join(config.OUTPUT_DIR, "speaker_sim"))
+    parser.add_argument("--models-dir",      default=None, help="Override config.MODELS_DIR")
+    parser.add_argument("--ref-dir",         default=None, help="Override config.REFERENCE_DIR")
+    parser.add_argument("--enrollment-file", default=None, help="Override enrollment speaker.wav path")
     args = parser.parse_args()
 
     model_state    = load_model()
+    if args.models_dir:
+        model_state["models_dir"] = os.path.abspath(args.models_dir)
+    if args.ref_dir:
+        model_state["ref_dir"] = os.path.abspath(args.ref_dir)
+    if args.enrollment_file:
+        model_state["enrollment_file"] = os.path.abspath(args.enrollment_file)
+
     df, summary_df = run_gate(model_state)
     print_results(df, summary_df)
     save_results(df, summary_df, args.output_dir)

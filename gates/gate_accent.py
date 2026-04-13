@@ -118,9 +118,12 @@ def run_gate(model_state=None):
         })
 
     label_str  = "+".join(config.ACCENT_TARGET_LABELS)
-    summary_df = pd.DataFrame(summary_rows).sort_values(
-        by=f"Median_P({label_str})", ascending=False
-    )
+    summary_df = pd.DataFrame(summary_rows)
+    summary_df["_pass_num"] = summary_df["Pass_Rate"].apply(lambda x: int(x.split("/")[0]))
+    summary_df = summary_df.sort_values(
+        by=["_pass_num", f"Median_P({label_str})"],
+        ascending=[False, False]
+    ).drop(columns=["_pass_num"])
     return df, summary_df
 
 
