@@ -45,9 +45,9 @@ MUMBLE_THRESHOLD = -1.0   # log prob below this = low confidence word
 # ── NISQA thresholds ───────────────────────────────────────────────────────────
 NISQA_THRESHOLDS = {
     "MOS"           : 3.75,  # raised 3.0→3.75: floor calibrated from data (min passing MOS = 4.11)
-    "Noisiness"     : 3.5,   # SNR=30dB already audibly bad → threshold is correct
+    "Noisiness"     : 3.5,   # calibrated: catches background noise (SNR<50dB). Vocoder noise caught by artifact gate separately.
     "Discontinuity" : 3.5,
-    "Coloration"    : 3.0,   # lp6kHz and hp500Hz both audibly bad at level_1 → correct
+    "Coloration"    : 4.0,   # raised 3.0→4.0: hp350Hz/hp400Hz perceptually unacceptable for dubbing
     "Loudness"      : 3.4,   # raised 3.0→3.4: loud+9dB now fails (perceptually correct)
 }
 NISQA_DELTA_THRESHOLDS = {
@@ -56,6 +56,18 @@ NISQA_DELTA_THRESHOLDS = {
     "Discontinuity" : -0.5,
     "Coloration"    : -0.5,
     "Loudness"      : -0.6,
+}
+# Permissive thresholds for reference audio quality.
+# If reference fails these, delta comparison is skipped (segment → degraded bucket).
+# Lower than NISQA_THRESHOLDS because:
+#   - Hindi reference gets a cross-lingual NISQA penalty (trained on English)
+#   - We only want to flag genuinely bad reference (noisy recording, clipping, etc.)
+NISQA_REF_THRESHOLDS = {
+    "MOS"           : 3.0,
+    "Noisiness"     : 3.0,
+    "Discontinuity" : 3.0,
+    "Coloration"    : 3.0,
+    "Loudness"      : 3.0,
 }
 
 # ── UTMOS thresholds ───────────────────────────────────────────────────────────

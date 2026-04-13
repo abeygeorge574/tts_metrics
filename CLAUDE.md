@@ -45,23 +45,68 @@ data/
 Each run: `output/runs/YYYY-MM-DD_HH-MM-SS/` with per-gate CSVs + pipeline.log
 
 ## Configuration
-All thresholds in `config.py`. Key ones:
+All thresholds in `config.py`. **Calibrated values (updated Apr 2026):**
 
 | Gate | Key threshold |
 |------|--------------|
 | WER | WER ≤ 0.10, Intel ≥ 0.85 |
-| NISQA | MOS ≥ 3.0, ΔMOS ≥ −0.5 |
-| UTMOS | ≥ 3.0 |
+| NISQA | MOS ≥ **3.75**, Noisiness ≥ 3.5, Coloration ≥ **4.0**, Loudness ≥ 3.4, ΔMOS ≥ −0.5 |
+| UTMOS | ≥ 3.0 (redundant — same verdicts as NISQA; consider removing from hard gates) |
 | Speaker sim | cosine ≥ 0.75 |
 | Duration | ±10% |
-| Pitch | median Δ ≤ 30 Hz, std ≥ 0.5× ref |
-| Amplitude | LUFS ±4, LRA ±3, centroid ±500 Hz |
-| Accent | "american" proximity ≥ 0.75 |
-| Artifact | HNR ≥ 8 dB, pause median ≤ −45 dBFS (FAIL) / −58 dBFS (WARN), SA_combined ≤ 0.30 |
+| Pitch | median Δ ≤ 30 Hz, std ≥ 0.5× ref, abs std ≥ 20 Hz |
+| Amplitude | LUFS ±6.5, LRA ±3, centroid ±500 Hz |
+| Accent | "american" proximity ≥ 0.75 (language detector only, not accent classifier) |
+| Artifact | HNR ≥ 8 dB, pause median ≤ −35 dBFS (FAIL) / −58 dBFS (WARN), SA_combined ≤ 0.30 |
 
 Model weights (gitignored, must be local):
 - NISQA: `weights/nisqa/weights/nisqa.tar`
 - UTMOS: `weights/utmos/simple/epoch=3-step=7459.ckpt`
+
+## Datasets
+
+Two separate datasets — always clarify which one is being used:
+
+| Dataset | Path | Models | Samples | Purpose |
+|---------|------|--------|---------|---------|
+| Test set | `data/models/` | 12 models | 5 synthetic (sample_1–5.wav) | Gate calibration |
+| Episode data | `data/hindi_eval/models/` | 5 models | 6 real Hindi-dubbed segments (PSTSBF-… IDs) | Production eval |
+
+- Episode text refs: `data/hindi_eval/text_refs/`
+- Episode reference audio: `data/hindi_eval/reference/`
+- Episode output goes to: `output/hindi_eval/<gate>/`
+- Test output goes to: `output/<gate>/`
+
+Episode models (5): edge_tts_andrew, edge_tts_ava, gtts, kokoro, parler_mini
+
+## Known gate limitations
+
+- **Duration, Pitch (register), Amplitude (dynamics/EQ), SER, Arousal/Valence**: unreliable with gtts proxy reference. gtts is the slowest, flattest, most muffled TTS — all comparisons skew. Meaningful only with real Hindi reference.
+- **Accent gate**: detects English vs non-English only. All English TTS score ~1.0 for american/british/indian equally.
+- **UTMOS**: misses vocoder buzz (fastspeech2, mms score 4.0+ despite audible artifacts). Artifact gate catches what UTMOS misses.
+- **WER**: intelligibility only — fastspeech2/speecht5_hifigan pass despite buzz because Whisper transcribes correctly.
+- **Artifact gate verdicts (12 test models)**: PASS: kokoro, kokoro_v1, edge_tts_ava, edge_tts_andrew, gtts, parler_mini, samantha. FAIL: f5tts, fastspeech2, mms, speecht5_hifigan, speecht5_griffinlim.
+
+## Run commands
+
+Always `cd /Users/abey/Documents/tts_metrics` before running — CWD resets to worktree otherwise.
+
+```bash
+# Base env gates (amplitude, pitch, vad, etc.) need numba cache:
+cd /Users/abey/Documents/tts_metrics
+NUMBA_CACHE_DIR=$TMPDIR/numba_cache /Users/abey/miniconda3/bin/python run_pipeline.py --gates <gate>
+
+# WER/UTMOS/Accent (utmos env) — add MPS fallback to prevent Metal GPU crash:
+PYTORCH_ENABLE_MPS_FALLBACK=1 /Users/abey/miniconda3/envs/utmos/bin/python gates/gate_wer.py
+
+# Run on episode data (after adding --models-dir/--refs-dir CLI args):
+PYTORCH_ENABLE_MPS_FALLBACK=1 /Users/abey/miniconda3/envs/utmos/bin/python gates/gate_wer.py \
+  --models-dir data/hindi_eval/models --refs-dir data/hindi_eval/text_refs \
+  --output-dir output/hindi_eval/wer
+```
+
+## Dual threshold (pending work)
+Reference audio (Hindi) may score lower on NISQA due to cross-lingual penalty. Proposed: `NISQA_REF_THRESHOLDS` (permissive) separate from `NISQA_THRESHOLDS` (strict for TTS output). Not yet implemented.
 
 ---
 

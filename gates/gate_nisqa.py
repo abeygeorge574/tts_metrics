@@ -165,8 +165,8 @@ def run_gate(model_state=None):
 
     nisqa_weight = model_state["nisqa_weight"]
 
-    MODELS_DIR    = config.MODELS_DIR
-    REFERENCE_DIR = config.REFERENCE_DIR
+    MODELS_DIR    = model_state.get("models_dir") or config.MODELS_DIR
+    REFERENCE_DIR = model_state.get("ref_dir")    or config.REFERENCE_DIR
 
     if not os.path.exists(MODELS_DIR):
         raise FileNotFoundError(f"Models folder not found: {MODELS_DIR}")
@@ -274,9 +274,16 @@ def run_gate(model_state=None):
                               f" Dis: {ref_scores['Discontinuity']} | Col: {ref_scores['Coloration']} |"
                               f" Lou: {ref_scores['Loudness']}")
 
-                    if ref_scores is not None and ref_scores["MOS"] < 3.0:
+                    ref_quality_fail = (
+                        ref_scores is not None and
+                        any(ref_scores[k] < config.NISQA_REF_THRESHOLDS[k]
+                            for k in config.NISQA_REF_THRESHOLDS)
+                    )
+                    if ref_quality_fail:
+                        failed_dims = [k for k in config.NISQA_REF_THRESHOLDS
+                                       if ref_scores[k] < config.NISQA_REF_THRESHOLDS[k]]
                         ref_flag = "REF_QUALITY"
-                        print(f"  Reference MOS below 3.0 — skipping delta")
+                        print(f"  Reference below quality floor on {failed_dims} — skipping delta")
                     else:
                         deltas = {
                             k: round(tts_scores[k] - ref_scores[k], 3)
@@ -417,7 +424,7 @@ def print_results(df, summary_df):
     print("Clean Pass Rate    → primary ranking — trustworthy ground truth comparison")
     print("REVIEW segments    → absolute fail but delta small — listen before deciding")
     print("Top Failure Mode   → which artifact type this model produces most")
-    print("Flag REF_QUALITY   → reference MOS < 3.0 — delta skipped, counts as degraded")
+    print("Flag REF_QUALITY   → reference below NISQA_REF_THRESHOLDS — delta skipped, counts as degraded")
     print("Flag NO_REF        → no reference file — absolute threshold only, counts as degraded")
 
 
@@ -433,10 +440,16 @@ def save_results(df, summary_df, output_dir):
 # ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="NISQA gate")
-    parser.add_argument("--output-dir", default=os.path.join(config.OUTPUT_DIR, "nisqa"))
+    parser.add_argument("--output-dir",  default=os.path.join(config.OUTPUT_DIR, "nisqa"))
+    parser.add_argument("--models-dir",  default=None, help="Override config.MODELS_DIR")
+    parser.add_argument("--ref-dir",     default=None, help="Override config.REFERENCE_DIR")
     args = parser.parse_args()
 
-    model_state    = load_model()
+    model_state = load_model()
+    if args.models_dir:
+        model_state["models_dir"] = os.path.abspath(args.models_dir)
+    if args.ref_dir:
+        model_state["ref_dir"] = os.path.abspath(args.ref_dir)
     df, summary_df = run_gate(model_state)
     print_results(df, summary_df)
     save_results(df, summary_df, args.output_dir)

@@ -20,7 +20,13 @@ import sys
 import subprocess
 import argparse
 import logging
+import tempfile
 from datetime import datetime
+
+# librosa uses numba JIT which needs a writable cache dir.
+# Without this, base env gates (amplitude, pitch, vad) fail with:
+#   "cannot cache function '__o_fold': no locator available"
+os.environ.setdefault("NUMBA_CACHE_DIR", os.path.join(tempfile.gettempdir(), "numba_cache"))
 
 # ── Run directory ──────────────────────────────────────────────────────────────
 # Each pipeline run gets its own timestamped folder under output/runs/.

@@ -52,11 +52,14 @@ def load_model():
         print("Whisper CUDA engine ready.")
     else:
         try:
-            import mlx_whisper
-            ENGINE        = "mlx"
-            MODEL_TIER    = "mlx-community/whisper-medium-mlx"
-            whisper_model = None   # mlx_whisper loaded lazily per call
-            print("Apple Silicon detected. Using MLX Whisper.")
+            if not os.environ.get("WHISPER_FORCE_CPU"):
+                import mlx_whisper
+                ENGINE        = "mlx"
+                MODEL_TIER    = "mlx-community/whisper-medium-mlx"
+                whisper_model = None   # mlx_whisper loaded lazily per call
+                print("Apple Silicon detected. Using MLX Whisper.")
+            else:
+                raise ImportError("WHISPER_FORCE_CPU set — skipping MLX")
         except ImportError:
             import whisper as openai_whisper
             ENGINE     = "cpu"
@@ -199,8 +202,8 @@ def run_gate(model_state=None):
     model_tier    = model_state["model_tier"]
     whisper_model = model_state["model"]
 
-    MODELS_DIR     = config.MODELS_DIR
-    REFERENCES_DIR = config.TEXT_REFERENCE_DIR
+    MODELS_DIR     = model_state.get("models_dir") or config.MODELS_DIR
+    REFERENCES_DIR = model_state.get("refs_dir")   or config.TEXT_REFERENCE_DIR
 
     for folder in [REFERENCES_DIR, MODELS_DIR]:
         if not os.path.exists(folder):
@@ -426,10 +429,16 @@ def save_results(df, summary_df, output_dir):
 # ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="WER + Intelligibility gate")
-    parser.add_argument("--output-dir", default=os.path.join(config.OUTPUT_DIR, "wer"))
+    parser.add_argument("--output-dir",  default=os.path.join(config.OUTPUT_DIR, "wer"))
+    parser.add_argument("--models-dir",  default=None, help="Override config.MODELS_DIR")
+    parser.add_argument("--refs-dir",    default=None, help="Override config.TEXT_REFERENCE_DIR")
     args = parser.parse_args()
 
     model_state  = load_model()
+    if args.models_dir:
+        model_state["models_dir"] = os.path.abspath(args.models_dir)
+    if args.refs_dir:
+        model_state["refs_dir"] = os.path.abspath(args.refs_dir)
     df, summary_df = run_gate(model_state)
     print_results(df, summary_df)
     save_results(df, summary_df, args.output_dir)
