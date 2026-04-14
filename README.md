@@ -129,7 +129,7 @@ python gates/gate_pitch.py --output-dir output/pitch
 | `speaker_sim` | base | ECAPA-TDNN cosine speaker similarity | Cosine ≥ 0.55 |
 | `ser` | base | Emotion label match (emotion2vec) | Top-1 label matches reference |
 | `arousal_valence` | base | Dimensional emotion delta vs reference | \|Δarousal\| ≤ 0.15, \|Δvalence\| ≤ 0.15 |
-| `pitch` | base | F0 register, expressiveness, std ratio | Median Δ ≤ 30 Hz, std ≥ 20 Hz, std ratio ≥ 0.5× ref |
+| `pitch` | base | F0 register, expressiveness, std ratio | Mean Δ ≤ 30 Hz, std ≥ 20 Hz, std ratio ≥ 0.5× ref |
 | `duration` | base | TTS/reference duration ratio | Within ±10% |
 | `vad` | base | Pause count, position, duration alignment | Count Δ ≤ 20, position ≤ 0.2 s, dur ratio 0.75–1.25 |
 | `amplitude` | base | LUFS, LRA, spectral centroid, true peak | LUFS Δ ≤ 6.5, LRA Δ ≤ 3, centroid Δ ≤ 500 Hz, peak < −1 dBFS |
@@ -208,6 +208,16 @@ python gates/gate_pitch.py \
 ```
 
 `--ref-dir` is optional. If omitted, speaker_sim falls back to `--enrollment-file`; pitch runs in absolute-threshold-only mode.
+
+### Pitch gate — PRAAT estimator
+
+Uses PRAAT (via `praat-parselmouth`) for F0 estimation. Install: `pip install praat-parselmouth`.
+
+- **Per segment**: mean F0 of voiced frames (PRAAT's autocorrelation resolves octave ambiguity, so mean is reliable)
+- **Cross-segment summary**: median of per-segment mean deltas + Max Δ (worst case)
+- **Voiced frames**: frames where PRAAT detects a fundamental frequency. Unvoiced frames (fricatives, stops, silence) are excluded from F0 computation
+- **Degraded reference**: if reference voiced ratio < 0.2, delta comparisons are skipped for that segment
+- **Validated**: estimator choice confirmed by isolated comparison against pyin and CREPE, with perceptual ground truth
 
 ---
 
