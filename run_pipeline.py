@@ -257,15 +257,6 @@ def run_base_gate(gate_key, gate_module_name, output_dir, models_dir=None, ref_d
     """Import and run a gate directly in this process (base env)."""
     import importlib.util
 
-    gate_script_abs = os.path.join(ROOT, "gates", f"{gate_module_name}.py")
-    spec   = importlib.util.spec_from_file_location(gate_module_name, gate_script_abs)
-    module = importlib.util.module_from_spec(spec)
-    # Register before exec so subclasses of transformers.PreTrainedModel can
-    # resolve their module via sys.modules[cls.__module__] (required by newer
-    # transformers versions).
-    sys.modules[gate_module_name] = module
-    spec.loader.exec_module(module)
-
     gate_output_dir = os.path.join(output_dir, gate_key)
 
     log.info("")
@@ -274,6 +265,15 @@ def run_base_gate(gate_key, gate_module_name, output_dir, models_dir=None, ref_d
     log.info("=" * 60)
 
     try:
+        gate_script_abs = os.path.join(ROOT, "gates", f"{gate_module_name}.py")
+        spec   = importlib.util.spec_from_file_location(gate_module_name, gate_script_abs)
+        module = importlib.util.module_from_spec(spec)
+        # Register before exec so subclasses of transformers.PreTrainedModel can
+        # resolve their module via sys.modules[cls.__module__] (required by newer
+        # transformers versions).
+        sys.modules[gate_module_name] = module
+        spec.loader.exec_module(module)
+
         model_state = module.load_model()
         if model_state is None:
             model_state = {}

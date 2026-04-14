@@ -99,14 +99,14 @@ def compute_wer(reference_text, hypothesis_text):
 
     if not ref_norm or not hyp_norm:
         return {
-            "WER"                : 1.0 if ref_norm else 0.0,
-            "Substitutions"      : 0,
-            "Deletions"          : 0,
-            "Insertions"         : 0,
-            "Hits"               : 0,
-            "Substitution_Detail": "—",
-            "Deleted_Words"      : "—",
-            "Inserted_Words"     : "—",
+            "WER (threshold≤0.10)"  : 1.0 if ref_norm else 0.0,
+            "Substitutions"         : 0,
+            "Deletions"             : 0,
+            "Insertions"            : 0,
+            "Hits"                  : 0,
+            "Substitution_Detail"   : "—",
+            "Deleted_Words"         : "—",
+            "Inserted_Words"        : "—",
         }
 
     _ref_transform = Compose([
@@ -156,14 +156,14 @@ def compute_wer(reference_text, hypothesis_text):
                     inserted_words.append(hyp_words[i])
 
     return {
-        "WER"                : round(out.wer, 4),
-        "Substitutions"      : out.substitutions,
-        "Deletions"          : out.deletions,
-        "Insertions"         : out.insertions,
-        "Hits"               : out.hits,
-        "Substitution_Detail": ", ".join(substitution_pairs) if substitution_pairs else "—",
-        "Deleted_Words"      : ", ".join(deleted_words)      if deleted_words      else "—",
-        "Inserted_Words"     : ", ".join(inserted_words)     if inserted_words     else "—",
+        "WER (threshold≤0.10)"  : round(out.wer, 4),
+        "Substitutions"         : out.substitutions,
+        "Deletions"             : out.deletions,
+        "Insertions"            : out.insertions,
+        "Hits"                  : out.hits,
+        "Substitution_Detail"   : ", ".join(substitution_pairs) if substitution_pairs else "—",
+        "Deleted_Words"         : ", ".join(deleted_words)      if deleted_words      else "—",
+        "Inserted_Words"        : ", ".join(inserted_words)     if inserted_words     else "—",
     }
 
 
@@ -187,10 +187,24 @@ def extract_intelligibility(result, mumble_threshold):
     intel_pass_rate = round(passed / total, 4) if total > 0 else None
 
     return {
-        "Mean_LogProb"   : mean_log_prob,
-        "Intel_Pass_Rate": intel_pass_rate,
-        "Low_Conf_Words" : ", ".join(low_conf_words) if low_conf_words else "—",
+        "Mean_LogProb"                         : mean_log_prob,
+        "Intelligibility Rate (threshold≥0.85)" : intel_pass_rate,
+        "Low_Conf_Words"                        : ", ".join(low_conf_words) if low_conf_words else "—",
     }
+
+
+# ── Combined verdict helper ────────────────────────────────────────────────────
+def _combined_verdict(wer_verdict, intel_verdict):
+    """
+    PASS   — both pass
+    NEAR_MISS — either is NEAR_MISS and neither hard-fails
+    FAIL   — either hard-fails
+    """
+    if wer_verdict == "FAIL" or intel_verdict == "FAIL":
+        return "FAIL"
+    if wer_verdict == "NEAR_MISS" or intel_verdict == "NEAR_MISS":
+        return "NEAR_MISS"
+    return "PASS"
 
 
 # ── Main gate ──────────────────────────────────────────────────────────────────
@@ -250,9 +264,12 @@ def run_gate(model_state=None):
     print(f"\nReady: {len(model_folders)} models × {len(sample_names)} samples = "
           f"{len(model_folders) * len(sample_names)} evaluations.")
 
-    WER_THRESHOLD    = config.WER_THRESHOLD
-    INTEL_THRESHOLD  = config.INTEL_THRESHOLD
-    MUMBLE_THRESHOLD = config.MUMBLE_THRESHOLD
+    WER_THRESHOLD     = config.WER_THRESHOLD
+    INTEL_THRESHOLD   = config.INTEL_THRESHOLD
+    MUMBLE_THRESHOLD  = config.MUMBLE_THRESHOLD
+    WER_NM_MARGIN     = config.WER_NEAR_MISS_MARGIN            # 0.20
+    WER_NM_UPPER      = WER_THRESHOLD * (1 + WER_NM_MARGIN)    # 0.12
+    INTEL_NM_LOWER    = INTEL_THRESHOLD * (1 - WER_NM_MARGIN)  # 0.68
 
     results = []
 
@@ -280,15 +297,32 @@ def run_gate(model_state=None):
                 wer_data   = compute_wer(reference_text, hypothesis_text)
                 intel_data = extract_intelligibility(result, MUMBLE_THRESHOLD)
 
-                wer_pass   = wer_data["WER"] <= WER_THRESHOLD
-                intel_pass = (
-                    intel_data["Intel_Pass_Rate"] is not None and
-                    intel_data["Intel_Pass_Rate"] >= INTEL_THRESHOLD
-                )
+                wer_val   = wer_data["WER (threshold≤0.10)"]
+                intel_val = intel_data["Intelligibility Rate (threshold≥0.85)"]
+
+                # WER verdict
+                if wer_val <= WER_THRESHOLD:
+                    wer_verdict = "PASS"
+                elif wer_val <= WER_NM_UPPER:
+                    wer_verdict = "NEAR_MISS"
+                else:
+                    wer_verdict = "FAIL"
+
+                # Intel verdict
+                if intel_val is None:
+                    intel_verdict = "FAIL"
+                elif intel_val >= INTEL_THRESHOLD:
+                    intel_verdict = "PASS"
+                elif intel_val >= INTEL_NM_LOWER:
+                    intel_verdict = "NEAR_MISS"
+                else:
+                    intel_verdict = "FAIL"
+
+                final_verdict = _combined_verdict(wer_verdict, intel_verdict)
                 deletion_flag = wer_data["Deletions"] > 0
 
-                print(f"  WER    : {wer_data['WER']} {'PASS' if wer_pass else 'FAIL'} | "
-                      f"Intel: {intel_data['Intel_Pass_Rate']} {'PASS' if intel_pass else 'FAIL'}")
+                print(f"  WER    : {wer_val} {wer_verdict} | "
+                      f"Intel: {intel_val} {intel_verdict} | Final: {final_verdict}")
                 if wer_data["Substitution_Detail"] != "—":
                     print(f"  Subs   : {wer_data['Substitution_Detail']}")
                 if wer_data["Deleted_Words"] != "—":
@@ -302,47 +336,49 @@ def run_gate(model_state=None):
                 hit_rate = round(wer_data["Hits"] / total_ref_words, 4) if total_ref_words > 0 else None
 
                 results.append({
-                    "Model"               : model,
-                    "Sample"              : sample_name,
-                    "Reference"           : reference_text,
-                    "Whisper"             : hypothesis_text,
-                    "WER"                 : wer_data["WER"],
-                    "Substitutions"       : wer_data["Substitutions"],
-                    "Deletions"           : wer_data["Deletions"],
-                    "Insertions"          : wer_data["Insertions"],
-                    "Hit_Rate"            : hit_rate,
-                    "Substitution_Detail" : wer_data["Substitution_Detail"],
-                    "Deleted_Words"       : wer_data["Deleted_Words"],
-                    "Inserted_Words"      : wer_data["Inserted_Words"],
-                    "Mean_LogProb"        : intel_data["Mean_LogProb"],
-                    "Intel_Pass_Rate"     : intel_data["Intel_Pass_Rate"],
-                    "Low_Conf_Words"      : intel_data["Low_Conf_Words"],
-                    "WER_Pass"            : "PASS" if wer_pass   else "FAIL",
-                    "Intel_Pass"          : "PASS" if intel_pass else "FAIL",
-                    "Deletion_Flag"       : "FLAG" if deletion_flag else "OK",
+                    "Model"                                    : model,
+                    "Sample"                                   : sample_name,
+                    "Reference"                                : reference_text,
+                    "Whisper"                                  : hypothesis_text,
+                    "WER (threshold≤0.10)"                     : wer_val,
+                    "Substitutions"                            : wer_data["Substitutions"],
+                    "Deletions"                                : wer_data["Deletions"],
+                    "Insertions"                               : wer_data["Insertions"],
+                    "Hit_Rate"                                 : hit_rate,
+                    "Substitution_Detail"                      : wer_data["Substitution_Detail"],
+                    "Deleted_Words"                            : wer_data["Deleted_Words"],
+                    "Inserted_Words"                           : wer_data["Inserted_Words"],
+                    "Mean_LogProb"                             : intel_data["Mean_LogProb"],
+                    "Intelligibility Rate (threshold≥0.85)"    : intel_val,
+                    "Low_Conf_Words"                           : intel_data["Low_Conf_Words"],
+                    "WER Pass (threshold≤0.10)"                : wer_verdict,
+                    "Intel Pass (threshold≥0.85)"              : intel_verdict,
+                    "Final Pass (PASS/NEAR_MISS/FAIL)"         : final_verdict,
+                    "Deletion_Flag"                            : "FLAG" if deletion_flag else "OK",
                 })
 
             except Exception as e:
                 print(f"  ERROR: {e}")
                 results.append({
-                    "Model"               : model,
-                    "Sample"              : sample_name,
-                    "Reference"           : reference_text,
-                    "Whisper"             : "ERROR",
-                    "WER"                 : 1.0,
-                    "Substitutions"       : 0,
-                    "Deletions"           : 0,
-                    "Insertions"          : 0,
-                    "Hit_Rate"            : None,
-                    "Substitution_Detail" : "—",
-                    "Deleted_Words"       : "—",
-                    "Inserted_Words"      : "—",
-                    "Mean_LogProb"        : None,
-                    "Intel_Pass_Rate"     : None,
-                    "Low_Conf_Words"      : "ERROR",
-                    "WER_Pass"            : "FAIL",
-                    "Intel_Pass"          : "FAIL",
-                    "Deletion_Flag"       : "—",
+                    "Model"                                    : model,
+                    "Sample"                                   : sample_name,
+                    "Reference"                                : reference_text,
+                    "Whisper"                                  : "ERROR",
+                    "WER (threshold≤0.10)"                     : 1.0,
+                    "Substitutions"                            : 0,
+                    "Deletions"                                : 0,
+                    "Insertions"                               : 0,
+                    "Hit_Rate"                                 : None,
+                    "Substitution_Detail"                      : "—",
+                    "Deleted_Words"                            : "—",
+                    "Inserted_Words"                           : "—",
+                    "Mean_LogProb"                             : None,
+                    "Intelligibility Rate (threshold≥0.85)"    : None,
+                    "Low_Conf_Words"                           : "ERROR",
+                    "WER Pass (threshold≤0.10)"                : "FAIL",
+                    "Intel Pass (threshold≥0.85)"              : "FAIL",
+                    "Final Pass (PASS/NEAR_MISS/FAIL)"         : "FAIL",
+                    "Deletion_Flag"                            : "—",
                 })
 
             finally:
@@ -356,31 +392,41 @@ def run_gate(model_state=None):
 
     df = pd.DataFrame(results)
 
+    fp_col    = "Final Pass (PASS/NEAR_MISS/FAIL)"
+    wer_col   = "WER (threshold≤0.10)"
+    intel_col = "Intelligibility Rate (threshold≥0.85)"
+    wp_col    = "WER Pass (threshold≤0.10)"
+    ip_col    = "Intel Pass (threshold≥0.85)"
+
     summary_rows = []
     for model in model_folders:
         model_df     = df[df["Model"] == model]
         total        = len(model_df)
-        wer_vals     = model_df["WER"]
+        wer_vals     = model_df[wer_col]
         logprob_vals = model_df["Mean_LogProb"].dropna()
 
-        wer_pass_count   = (model_df["WER_Pass"]   == "PASS").sum()
-        intel_pass_count = (model_df["Intel_Pass"] == "PASS").sum()
+        wer_pass_count   = (model_df[wp_col] == "PASS").sum()
+        intel_pass_count = (model_df[ip_col] == "PASS").sum()
+        final_pass_count = (model_df[fp_col] == "PASS").sum()
+        near_miss_count  = (model_df[fp_col] == "NEAR_MISS").sum()
 
         summary_rows.append({
-            "Model"              : model,
-            "Segments"           : total,
-            "WER Pass Rate"      : f"{wer_pass_count}/{total}",
-            "Intel Pass Rate"    : f"{intel_pass_count}/{total}",
-            "Median WER"         : round(wer_vals.median(), 4),
-            "Max WER"            : round(wer_vals.max(), 4),
-            "Median LogProb"     : round(logprob_vals.median(), 4) if len(logprob_vals) > 0 else None,
-            "Total Deletions"    : model_df["Deletions"].sum(),
-            "Total Substitutions": model_df["Substitutions"].sum(),
-            "Total Insertions"   : model_df["Insertions"].sum(),
+            "Model"                              : model,
+            "Segments"                           : total,
+            "WER Pass Rate (PASS / total)"       : f"{wer_pass_count}/{total}",
+            "Intel Pass Rate (PASS / total)"     : f"{intel_pass_count}/{total}",
+            "Final Pass Rate (PASS / total)"     : f"{final_pass_count}/{total}",
+            "Near Miss (WER or Intel marginal)"  : int(near_miss_count),
+            "Median WER"                         : round(wer_vals.median(), 4),
+            "Max WER"                            : round(wer_vals.max(), 4),
+            "Median LogProb"                     : round(logprob_vals.median(), 4) if len(logprob_vals) > 0 else None,
+            "Total Deletions"                    : model_df["Deletions"].sum(),
+            "Total Substitutions"                : model_df["Substitutions"].sum(),
+            "Total Insertions"                   : model_df["Insertions"].sum(),
         })
 
     summary_df = pd.DataFrame(summary_rows)
-    summary_df["_wer_pass_num"] = summary_df["WER Pass Rate"].apply(lambda x: int(x.split("/")[0]))
+    summary_df["_wer_pass_num"] = summary_df["WER Pass Rate (PASS / total)"].apply(lambda x: int(x.split("/")[0]))
     summary_df = summary_df.sort_values(
         # Dubbing priority: pass rate → dropped words → wrong words → worst segment →
         #                   typical quality → extra words → whisper confidence
@@ -397,25 +443,33 @@ def print_results(df, summary_df):
     print("\n========== FULL PER-SEGMENT RESULTS ==========")
     print(df[[
         "Model", "Sample", "Reference", "Whisper",
-        "WER", "Substitutions", "Deletions", "Insertions", "Hit_Rate",
+        "WER (threshold≤0.10)", "Substitutions", "Deletions", "Insertions", "Hit_Rate",
         "Substitution_Detail", "Deleted_Words", "Inserted_Words",
-        "Mean_LogProb", "Intel_Pass_Rate", "Low_Conf_Words",
-        "WER_Pass", "Intel_Pass", "Deletion_Flag"
+        "Mean_LogProb", "Intelligibility Rate (threshold≥0.85)", "Low_Conf_Words",
+        "WER Pass (threshold≤0.10)", "Intel Pass (threshold≥0.85)",
+        "Final Pass (PASS/NEAR_MISS/FAIL)", "Deletion_Flag"
     ]].to_string(index=False))
 
     print("\n========== MODEL COMPARISON SUMMARY ==========")
     print(summary_df[[
-        "Model", "WER Pass Rate", "Intel Pass Rate",
+        "Model",
+        "WER Pass Rate (PASS / total)",
+        "Intel Pass Rate (PASS / total)",
+        "Final Pass Rate (PASS / total)",
+        "Near Miss (WER or Intel marginal)",
         "Median WER", "Max WER", "Median LogProb",
         "Total Deletions", "Total Substitutions"
     ]].to_string(index=False))
 
     print("\n========== WHAT TO LOOK FOR ==========")
-    print("WER Pass Rate    → primary ranking — fraction of segments with WER ≤ threshold")
+    print("Final Pass Rate  → primary ranking — both WER and Intel must pass")
+    print("NEAR_MISS        → WER in (0.10, 0.12] or Intel in [0.68, 0.85) — marginal")
     print("Hit_Rate         → correct words / total reference words (1.0 = perfect)")
     print("Median WER       → typical error level")
     print("Total Deletions  → words completely dropped — safety critical")
-    print(f"\nThresholds: WER <= {config.WER_THRESHOLD} | Intel >= {config.INTEL_THRESHOLD} | Mumble log-prob < {config.MUMBLE_THRESHOLD}")
+    print(f"\nThresholds: WER <= {config.WER_THRESHOLD} (NM <= {round(config.WER_THRESHOLD * (1 + config.WER_NEAR_MISS_MARGIN), 2)}) | "
+          f"Intel >= {config.INTEL_THRESHOLD} (NM >= {round(config.INTEL_THRESHOLD * (1 - config.WER_NEAR_MISS_MARGIN), 2)}) | "
+          f"Mumble log-prob < {config.MUMBLE_THRESHOLD}")
 
 
 # ── Save results ───────────────────────────────────────────────────────────────
@@ -432,6 +486,7 @@ if __name__ == "__main__":
     parser.add_argument("--output-dir",  default=os.path.join(config.OUTPUT_DIR, "wer"))
     parser.add_argument("--models-dir",  default=None, help="Override config.MODELS_DIR")
     parser.add_argument("--refs-dir",    default=None, help="Override config.TEXT_REFERENCE_DIR")
+    parser.add_argument("--ref-dir",     default=None, help="Audio reference dir (unused by WER, accepted for pipeline compatibility)")
     args = parser.parse_args()
 
     model_state  = load_model()
