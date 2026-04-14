@@ -122,6 +122,10 @@ ARTIFACT_COMBINED_THRESHOLD = 0.15   # combined score above this → ERR_SPECTRA
                                       # H1/H2 individual gate removed (caused false positives on edge-tts)
                                       # lowered 0.30→0.15: catches all fastspeech2 samples w/ ample margin
 
+# MERaLiON-SER-v1 — must be manually downloaded (proxy blocks HF hub for large blobs)
+# Download: huggingface_hub.snapshot_download('MERaLiON/MERaLiON-SER-v1', local_dir=MERALION_LOCAL_PATH)
+MERALION_LOCAL_PATH = "/tmp/claude/hf_cache/meralion-ser-v1"
+
 SPEAKER_SIM_WEIGHTS = os.path.join(ROOT, "weights", "speaker_sim")
 
 # ── Speaker similarity thresholds ─────────────────────────────────────────────

@@ -1,171 +1,119 @@
 """
 Gate: Speech Emotion Recognition (SER)
 Env : base (python 3.13)
-Uses emotion2vec_plus_large to classify emotion in reference vs TTS audio.
 
-Pass/Near_Miss/Fail logic:
-  PASS      — TTS top-1 label matches reference top-1 label
-  NEAR_MISS — Labels mismatch, but either:
-                (a) TTS had ref label as runner-up within SER_NEAR_MISS_MARGIN of winner, OR
-                (b) Reference distribution itself was uncertain (top-1 vs top-2 within margin)
-  FAIL      — Labels mismatch with clear confidence gap
+Uses MERaLiON-SER-v1 (Whisper-Medium + LoRA + ECAPA-TDNN) to classify emotion
+in reference vs TTS audio.
 
-Segments where reference confidence is low are flagged as degraded but still scored.
-Files longer than _SER_CHUNK_S seconds are automatically split into equal chunks.
-Final label = majority vote across chunks; confidence = mean of winning chunks.
+7 emotion classes: neutral, happy, sad, angry, fearful, disgusted, surprised
+
+Pass/fail logic (top-2 overlap):
+  PASS      — ref top-1 matches TTS top-1
+  NEAR_MISS — top-2 label sets intersect but top-1s differ
+              (e.g. ref=angry/fearful, TTS=fearful/surprised → fearful matches)
+  FAIL      — no label in common between ref top-2 and TTS top-2
+
+Arousal from MERaLiON dims is recorded as a diagnostic column (not pass/fail).
+Valence is also recorded but NOT used in pass/fail due to cross-lingual bias
+(English-trained model reads Hindi prosody as systematically lower-valence).
+
+Model: MERaLiON/MERaLiON-SER-v1
+Languages trained: en, zh, ms, ta, id, th, vi
+Hindi reference: cross-lingual — categorical errors expected on reference audio.
+Gate is still useful because relative comparison (ref pattern vs TTS pattern)
+catches TTS that radically shifts away from the reference delivery.
 """
 
 import os
 import sys
 import argparse
-import tempfile
 
+# Proxy clearing — before any HF / httpx imports
 for _pv in ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
     os.environ.pop(_pv, None)
 
+import torch
+import torch.nn.functional as F
+import torchaudio
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 
-_SER_CHUNK_S = 15   # emotion needs full utterance arc; training distribution ~5-15s
+EMOTION_LABELS = ['neutral', 'happy', 'sad', 'angry', 'fearful', 'disgusted', 'surprised']
 
 
 # ── Model loading ──────────────────────────────────────────────────────────────
 def load_model():
-    import logging
-    logging.getLogger("funasr").setLevel(logging.WARNING)
+    # Redirect HF module cache away from ~/.cache (may be write-protected in some envs)
+    os.environ.setdefault("HF_HOME", "/tmp/claude/hf_cache")
 
-    from funasr import AutoModel
+    from transformers import AutoModel, AutoProcessor
 
-    ser_model = AutoModel(
-        model="emotion2vec/emotion2vec_plus_large",
-        model_revision="v2.0.4",
-        hub="hf",
-        disable_update=True
+    local_path = config.MERALION_LOCAL_PATH
+    if not os.path.isdir(local_path):
+        raise FileNotFoundError(
+            f"MERaLiON model not found at {local_path}\n"
+            f"Download with:\n"
+            f"  from huggingface_hub import snapshot_download\n"
+            f"  snapshot_download('MERaLiON/MERaLiON-SER-v1', local_dir='{local_path}')"
+        )
+
+    print(f"Loading MERaLiON-SER-v1 from {local_path} ...")
+    model = AutoModel.from_pretrained(
+        local_path,
+        trust_remote_code=True,
+        low_cpu_mem_usage=False,
     )
+    processor = AutoProcessor.from_pretrained(
+        local_path,
+        trust_remote_code=True,
+    )
+    model.eval()
+    print("MERaLiON-SER-v1 loaded.")
+    return {"model": model, "processor": processor}
 
-    print("emotion2vec loaded.")
-    return {"ser_model": ser_model}
 
-
-# ── Emotion extraction (single file, raw) ─────────────────────────────────────
-def _get_emotion_raw(audio_path, ser_model):
+# ── Emotion extraction ─────────────────────────────────────────────────────────
+def get_emotion(audio_path, model, processor):
     """
-    Run emotion2vec on one file.
-    Returns (top1_label, top1_conf, top2_label, top2_conf) or (None, None, None, None).
+    Returns (top1_label, top1_conf, top2_label, top2_conf, valence, arousal, dominance).
+    dims order: [valence, arousal, dominance] — all in [0, 1].
+    Returns all None on error.
     """
     try:
-        res = ser_model.generate(
-            audio_path,
-            granularity="utterance",
-            extract_embedding=False,
-            disable_update=True
-        )
-        labels = res[0]["labels"]
-        scores = res[0]["scores"]
+        wav, sr = torchaudio.load(audio_path)
+        if wav.shape[0] > 1:
+            wav = wav.mean(dim=0, keepdim=True)
+        if sr != 16000:
+            wav = torchaudio.transforms.Resample(sr, 16000)(wav)
 
-        # Rank all classes by score descending
-        ranked = sorted(zip(scores, labels), reverse=True)
+        inputs = processor(wav.squeeze().numpy(), sampling_rate=16000, return_tensors='pt')
 
-        def clean(raw_label):
-            return raw_label.split("/")[-1]
+        with torch.no_grad():
+            outputs = model(**inputs)
 
-        top1_label = clean(ranked[0][1])
-        top1_conf  = round(ranked[0][0], 4)
-        top2_label = clean(ranked[1][1]) if len(ranked) > 1 else None
-        top2_conf  = round(ranked[1][0], 4) if len(ranked) > 1 else None
+        logits = outputs['logits']  # (1, 7)
+        dims   = outputs['dims']    # (1, 3) — [valence, arousal, dominance]
 
-        return top1_label, top1_conf, top2_label, top2_conf
+        probs      = F.softmax(logits, dim=-1).squeeze()  # (7,)
+        sorted_idx = probs.argsort(descending=True)
+
+        top1_label = EMOTION_LABELS[sorted_idx[0].item()]
+        top1_conf  = round(probs[sorted_idx[0]].item(), 4)
+        top2_label = EMOTION_LABELS[sorted_idx[1].item()]
+        top2_conf  = round(probs[sorted_idx[1]].item(), 4)
+
+        d         = dims.squeeze().tolist()
+        valence   = round(d[0], 4)
+        arousal   = round(d[1], 4)
+        dominance = round(d[2], 4)
+
+        return top1_label, top1_conf, top2_label, top2_conf, valence, arousal, dominance
 
     except Exception as e:
-        print(f"  emotion2vec error on {audio_path}: {e}")
-        return None, None, None, None
-
-
-# ── Emotion extraction with automatic chunking ─────────────────────────────────
-def get_emotion(audio_path, ser_model):
-    """
-    Score one audio file with emotion2vec.
-    Returns (top1_label, top1_conf, top2_label, top2_conf).
-
-    Short files (≤ _SER_CHUNK_S s) are scored directly.
-    Longer files are split into equal chunks, scored individually, and aggregated:
-      - top1: majority vote label, mean conf of that label's chunks
-      - top2: second most voted label, mean conf of that label's chunks
-    """
-    import soundfile as sf
-
-    data, sr = sf.read(audio_path, always_2d=False)
-    duration = len(data) / sr
-
-    if duration <= _SER_CHUNK_S:
-        return _get_emotion_raw(audio_path, ser_model)
-
-    import math
-    total_frames     = len(data)
-    max_chunk_frames = int(_SER_CHUNK_S * sr)
-    n_chunks         = math.ceil(total_frames / max_chunk_frames)
-    chunk_size       = total_frames / n_chunks
-    print(f"  [SER] {duration:.1f}s → {n_chunks} equal chunks (~{duration/n_chunks:.1f}s each)")
-
-    chunk_labels = []
-    chunk_confs  = []
-
-    tmp_dir = tempfile.mkdtemp(prefix="ser_chunk_")
-    try:
-        for i in range(n_chunks):
-            start = round(i       * chunk_size)
-            end   = round((i + 1) * chunk_size)
-            chunk = data[start:end]
-
-            if (end - start) / sr < 0.5:
-                print(f"  [SER] chunk {i+1}/{n_chunks}: too short, skipping")
-                continue
-
-            tmp_path = os.path.join(tmp_dir, f"chunk_{i:04d}.wav")
-            sf.write(tmp_path, chunk, sr)
-
-            try:
-                lbl, conf, _, _ = _get_emotion_raw(tmp_path, ser_model)
-                if lbl is not None:
-                    chunk_labels.append(lbl)
-                    chunk_confs.append(conf)
-                    print(f"  [SER] chunk {i+1}/{n_chunks}: {lbl} ({conf})")
-                else:
-                    print(f"  [SER] chunk {i+1}/{n_chunks}: no result")
-            finally:
-                try:
-                    os.remove(tmp_path)
-                except OSError:
-                    pass
-    finally:
-        try:
-            os.rmdir(tmp_dir)
-        except OSError:
-            pass
-
-    if not chunk_labels:
-        return None, None, None, None
-
-    from collections import Counter
-    vote_counts = Counter(chunk_labels)
-    top_two = vote_counts.most_common(2)
-
-    winner_label = top_two[0][0]
-    winner_confs = [c for lbl, c in zip(chunk_labels, chunk_confs) if lbl == winner_label]
-    top1_conf    = round(sum(winner_confs) / len(winner_confs), 4)
-
-    if len(top_two) > 1:
-        runner_label = top_two[1][0]
-        runner_confs = [c for lbl, c in zip(chunk_labels, chunk_confs) if lbl == runner_label]
-        top2_conf    = round(sum(runner_confs) / len(runner_confs), 4)
-    else:
-        runner_label = None
-        top2_conf    = None
-
-    print(f"  [SER] vote result: {winner_label} ({vote_counts}) → {top1_conf} mean conf")
-    return winner_label, top1_conf, runner_label, top2_conf
+        print(f"  MERaLiON error on {audio_path}: {e}")
+        return None, None, None, None, None, None, None
 
 
 # ── Main gate ──────────────────────────────────────────────────────────────────
@@ -173,24 +121,22 @@ def run_gate(model_state=None):
     if model_state is None:
         model_state = load_model()
 
-    ser_model = model_state["ser_model"]
+    model     = model_state["model"]
+    processor = model_state["processor"]
 
     MODELS_DIR    = model_state.get("models_dir") or config.MODELS_DIR
     REFERENCE_DIR = model_state.get("ref_dir")    or config.REFERENCE_DIR
-
-    CONFIDENCE_THRESHOLD = config.SER_CONFIDENCE_THRESHOLD
-    NEAR_MISS_MARGIN     = config.SER_NEAR_MISS_MARGIN
 
     if not os.path.exists(MODELS_DIR):
         raise FileNotFoundError(f"Models folder not found: {MODELS_DIR}")
     if not os.path.exists(REFERENCE_DIR):
         raise FileNotFoundError(
             f"Reference folder not found: {REFERENCE_DIR}\n"
-            f"SER requires Hindi reference audio to compare against."
+            f"SER gate requires reference audio to compare against."
         )
 
     ref_files = sorted([f for f in os.listdir(REFERENCE_DIR) if f.endswith(".wav")])
-    print(f"Reference folder found: {len(ref_files)} files")
+    print(f"Reference folder: {len(ref_files)} files")
 
     model_folders = sorted([
         d for d in os.listdir(MODELS_DIR)
@@ -198,246 +144,166 @@ def run_gate(model_state=None):
     ])
     if not model_folders:
         raise ValueError(f"No model folders found in {MODELS_DIR}")
-    print(f"Models found: {model_folders}")
+    print(f"Models: {model_folders}")
 
     model_samples = {}
-    for model in model_folders:
-        model_path = os.path.join(MODELS_DIR, model)
-        wav_files  = sorted([f for f in os.listdir(model_path) if f.endswith(".wav")])
-        model_samples[model] = wav_files
-        print(f"   {model}: {len(wav_files)} samples")
-
-    reference_filenames = set(model_samples[model_folders[0]])
-    for model in model_folders[1:]:
-        current_filenames = set(model_samples[model])
-        if current_filenames != reference_filenames:
-            missing = reference_filenames - current_filenames
-            extra   = current_filenames - reference_filenames
-            raise ValueError(
-                f"Model '{model}' has mismatched filenames.\n"
-                f"  Missing : {missing}\n"
-                f"  Extra   : {extra}"
-            )
-    print("All models have identical filenames.")
-
-    sample_names = model_samples[model_folders[0]]
-    total        = len(model_folders) * len(sample_names)
-    print(f"\nReady: {len(model_folders)} models × {len(sample_names)} samples = {total} evaluations")
+    for m in model_folders:
+        wav_files = sorted([f for f in os.listdir(os.path.join(MODELS_DIR, m)) if f.endswith(".wav")])
+        model_samples[m] = wav_files
+        print(f"   {m}: {len(wav_files)} samples")
 
     results = []
 
-    for model in model_folders:
-        print(f"\n{'='*50}")
-        print(f"Model: {model}")
-        print(f"{'='*50}")
+    for m in model_folders:
+        print(f"\n{'='*50}\nModel: {m}\n{'='*50}")
 
-        for wav_file in model_samples[model]:
-            import soundfile as sf
+        for wav_file in model_samples[m]:
             sample_name = os.path.splitext(wav_file)[0]
-            tts_path    = os.path.join(MODELS_DIR, model, wav_file)
+            tts_path    = os.path.join(MODELS_DIR, m, wav_file)
             ref_path    = os.path.join(REFERENCE_DIR, wav_file)
 
-            duration = sf.info(tts_path).duration
-            is_short = duration < config.MIN_SEGMENT_DURATION
-            if is_short:
-                print(f"\n  Sample : {sample_name} [SHORT: {duration:.2f}s]")
-            else:
-                print(f"\n  Sample : {sample_name}")
+            print(f"\n  Sample: {sample_name}")
 
             if not os.path.exists(ref_path):
-                print(f"  No reference file found — skipping")
+                print(f"  No reference — skipping")
                 results.append({
-                    "Model"         : model,
-                    "Sample"        : sample_name,
-                    "Ref Label"     : None,
-                    "Ref Conf"      : None,
-                    "Ref Top2 Label": None,
-                    "Ref Top2 Conf" : None,
-                    "TTS Label"     : None,
-                    "TTS Conf"      : None,
-                    "TTS Top2 Label": None,
-                    "TTS Top2 Conf" : None,
-                    "Pass"          : "SKIP",
-                    "Flag"          : "NO_REF",
-                    "_is_degraded"  : False,
+                    "Model"        : m,
+                    "Sample"       : sample_name,
+                    "Ref Top1"     : None, "Ref Top1 Conf": None,
+                    "Ref Top2"     : None, "Ref Top2 Conf": None,
+                    "Ref Arousal"  : None, "Ref Valence"  : None,
+                    "TTS Top1"     : None, "TTS Top1 Conf": None,
+                    "TTS Top2"     : None, "TTS Top2 Conf": None,
+                    "TTS Arousal"  : None, "TTS Valence"  : None,
+                    "Arousal Delta": None,
+                    "Emotion Pass" : "SKIP",
+                    "Arousal Pass" : "SKIP",
+                    "Flag"         : "NO_REF",
                 })
                 continue
 
-            ref_label, ref_conf, ref_top2_label, ref_top2_conf = get_emotion(ref_path, ser_model)
-            print(f"  Ref    : {ref_label} ({ref_conf})  runner-up: {ref_top2_label} ({ref_top2_conf})")
+            r_t1, r_t1c, r_t2, r_t2c, r_val, r_ar, r_dom = get_emotion(ref_path,  model, processor)
+            t_t1, t_t1c, t_t2, t_t2c, t_val, t_ar, t_dom = get_emotion(tts_path,  model, processor)
 
-            tts_label, tts_conf, tts_top2_label, tts_top2_conf = get_emotion(tts_path, ser_model)
-            print(f"  TTS    : {tts_label} ({tts_conf})  runner-up: {tts_top2_label} ({tts_top2_conf})")
+            print(f"  Ref: {r_t1}({r_t1c}) / {r_t2}({r_t2c})  ar={r_ar}")
+            print(f"  TTS: {t_t1}({t_t1c}) / {t_t2}({t_t2c})  ar={t_ar}")
 
-            if ref_label is None or tts_label is None:
-                flag        = "ERROR"
-                passed      = "ERROR"
-                is_degraded = False
-
-            elif ref_conf < CONFIDENCE_THRESHOLD:
-                flag        = "LOW_CONF_REF"
-                is_degraded = True
-                if ref_label == tts_label:
-                    passed = "PASS"
-                else:
-                    # Still apply near-miss even on low-conf ref
-                    passed = _classify_pass(
-                        ref_label, ref_conf, ref_top2_conf,
-                        tts_label, tts_conf, tts_top2_label, tts_top2_conf,
-                        NEAR_MISS_MARGIN
-                    )
-
+            if r_t1 is None or t_t1 is None:
+                emotion_pass = "ERROR"
+                arousal_pass = "ERROR"
+                flag         = "ERROR"
             else:
-                flag        = "—"
-                is_degraded = False
-                passed = _classify_pass(
-                    ref_label, ref_conf, ref_top2_conf,
-                    tts_label, tts_conf, tts_top2_label, tts_top2_conf,
-                    NEAR_MISS_MARGIN
-                )
+                ref_set = {r_t1, r_t2}
+                tts_set = {t_t1, t_t2}
 
-            if is_short:
-                flag        = "SHORT_SEGMENT"
-                is_degraded = True
+                if r_t1 == t_t1:
+                    emotion_pass = "PASS"
+                elif ref_set & tts_set:
+                    emotion_pass = "NEAR_MISS"
+                else:
+                    emotion_pass = "FAIL"
+                flag = "—"
 
-            print(f"  Result : {passed} | Flag: {flag}")
+            ar_delta = round(abs(r_ar - t_ar), 4) if r_ar is not None and t_ar is not None else None
+            if ar_delta is not None:
+                arousal_pass = "PASS" if ar_delta <= config.AROUSAL_DELTA_THRESHOLD else "FAIL"
+            else:
+                arousal_pass = "ERROR"
+
+            print(f"  → Emotion:{emotion_pass}  Arousal:{arousal_pass}  ar_Δ={ar_delta}")
 
             results.append({
-                "Model"         : model,
-                "Sample"        : sample_name,
-                "Ref Label"     : ref_label,
-                "Ref Conf"      : ref_conf,
-                "Ref Top2 Label": ref_top2_label,
-                "Ref Top2 Conf" : ref_top2_conf,
-                "TTS Label"     : tts_label,
-                "TTS Conf"      : tts_conf,
-                "TTS Top2 Label": tts_top2_label,
-                "TTS Top2 Conf" : tts_top2_conf,
-                "Pass"          : passed,
-                "Flag"          : flag,
-                "_is_degraded"  : is_degraded,
+                "Model"        : m,
+                "Sample"       : sample_name,
+                "Ref Top1"     : r_t1, "Ref Top1 Conf": r_t1c,
+                "Ref Top2"     : r_t2, "Ref Top2 Conf": r_t2c,
+                "Ref Arousal"  : r_ar, "Ref Valence"  : r_val,
+                "TTS Top1"     : t_t1, "TTS Top1 Conf": t_t1c,
+                "TTS Top2"     : t_t2, "TTS Top2 Conf": t_t2c,
+                "TTS Arousal"  : t_ar, "TTS Valence"  : t_val,
+                "Arousal Delta": ar_delta,
+                "Emotion Pass" : emotion_pass,
+                "Arousal Pass" : arousal_pass,
+                "Flag"         : flag,
             })
 
     print("\n\nAll evaluations complete.")
-
     df = pd.DataFrame(results)
 
     summary_rows = []
-    for model in model_folders:
-        model_df    = df[df["Model"] == model]
-        clean_df    = model_df[
-            ~model_df["_is_degraded"] &
-            (model_df["Flag"] != "NO_REF") &
-            (model_df["Flag"] != "ERROR")
-        ]
-        degraded_df = model_df[model_df["_is_degraded"]]
-        total       = len(model_df)
+    for m in model_folders:
+        model_df  = df[df["Model"] == m]
+        scored_df = model_df[model_df["Emotion Pass"].isin(["PASS", "NEAR_MISS", "FAIL"])]
+        e_pass = (scored_df["Emotion Pass"] == "PASS").sum()
+        e_nm   = (scored_df["Emotion Pass"] == "NEAR_MISS").sum()
+        e_fail = (scored_df["Emotion Pass"] == "FAIL").sum()
+        total  = len(scored_df)
 
-        clean_total     = len(clean_df)
-        clean_pass      = (clean_df["Pass"] == "PASS").sum()
-        clean_near_miss = (clean_df["Pass"] == "NEAR_MISS").sum()
-        clean_fail      = (clean_df["Pass"] == "FAIL").sum()
+        ar_scored = model_df[model_df["Arousal Pass"].isin(["PASS", "FAIL"])]
+        ar_pass = (ar_scored["Arousal Pass"] == "PASS").sum()
+        ar_total = len(ar_scored)
 
-        deg_total = len(degraded_df)
-        deg_pass  = (degraded_df["Pass"] == "PASS").sum()
-
-        fail_df              = clean_df[clean_df["Pass"] == "FAIL"]
-        most_common_mismatch = (
-            fail_df["TTS Label"].value_counts().index[0]
+        fail_df = scored_df[scored_df["Emotion Pass"] == "FAIL"]
+        common_mismatch = (
+            fail_df["TTS Top1"].value_counts().index[0]
             if len(fail_df) > 0 else "—"
         )
 
-        def rate(n, d):
-            return f"{n}/{d}" if d > 0 else "—"
-
         summary_rows.append({
-            "Model"             : model,
-            "Total Segments"    : total,
-            "Clean Segments"    : clean_total,
-            "Clean Pass Rate"   : rate(clean_pass,      clean_total),
-            "Clean Near Miss"   : rate(clean_near_miss, clean_total),
-            "Clean Fail Rate"   : rate(clean_fail,      clean_total),
-            "Degraded Segments" : deg_total,
-            "Degraded Pass Rate": rate(deg_pass, deg_total),
-            "Common Mismatch"   : most_common_mismatch,
+            "Model"              : m,
+            "Total"              : len(model_df),
+            "Emotion Pass Rate"  : f"{e_pass}/{total}",
+            "Emotion +NearMiss"  : f"{e_pass + e_nm}/{total}",
+            "Arousal Pass Rate"  : f"{ar_pass}/{ar_total}",
+            "Median Arousal Δ"   : round(scored_df["Arousal Delta"].dropna().median(), 4) if total > 0 else None,
+            "Common Mismatch"    : common_mismatch,
         })
 
     summary_df = pd.DataFrame(summary_rows)
-
-    def parse_rate(rate_str):
-        if rate_str == "—":
-            return -1
-        return int(rate_str.split("/")[0])
-
-    summary_df["_sort_pass"] = summary_df["Clean Pass Rate"].apply(parse_rate)
-    summary_df["_sort_deg"]  = summary_df["Degraded Pass Rate"].apply(parse_rate)
-    summary_df = summary_df.sort_values(
-        by=["_sort_pass", "_sort_deg"], ascending=[False, False]
-    ).drop(columns=["_sort_pass", "_sort_deg"])
+    summary_df["_sort"] = summary_df["Emotion +NearMiss"].apply(
+        lambda x: int(x.split("/")[0]) if "/" in str(x) else -1
+    )
+    summary_df = summary_df.sort_values("_sort", ascending=False).drop(columns=["_sort"])
 
     return df, summary_df
-
-
-def _classify_pass(ref_label, ref_conf, ref_top2_conf,
-                   tts_label, tts_conf, tts_top2_label, tts_top2_conf,
-                   margin):
-    """Return PASS, NEAR_MISS, or FAIL for one segment."""
-    if ref_label == tts_label:
-        return "PASS"
-
-    # TTS near-miss: ref label was runner-up in TTS output and within margin
-    tts_near = (
-        tts_top2_label == ref_label and
-        tts_top2_conf is not None and
-        (tts_conf - tts_top2_conf) <= margin
-    )
-
-    # Ref near-miss: reference distribution itself was uncertain
-    ref_near = (
-        ref_top2_conf is not None and
-        (ref_conf - ref_top2_conf) <= margin
-    )
-
-    return "NEAR_MISS" if (tts_near or ref_near) else "FAIL"
 
 
 # ── Print results ──────────────────────────────────────────────────────────────
 def print_results(df, summary_df):
     print("\n========== FULL PER-SEGMENT RESULTS ==========")
-    print(df[[
+    cols = [
         "Model", "Sample",
-        "Ref Label", "Ref Conf", "Ref Top2 Label", "Ref Top2 Conf",
-        "TTS Label", "TTS Conf", "TTS Top2 Label", "TTS Top2 Conf",
-        "Pass", "Flag"
-    ]].to_string(index=False))
+        "Ref Top1", "Ref Top1 Conf", "Ref Top2",
+        "TTS Top1", "TTS Top1 Conf", "TTS Top2",
+        "Ref Arousal", "TTS Arousal", "Arousal Delta",
+        "Emotion Pass", "Arousal Pass", "Flag",
+    ]
+    print(df[cols].to_string(index=False))
 
     print("\n========== MODEL COMPARISON SUMMARY ==========")
-    print(summary_df[[
-        "Model", "Clean Pass Rate", "Clean Near Miss", "Clean Fail Rate",
-        "Degraded Pass Rate", "Common Mismatch"
-    ]].to_string(index=False))
+    print(summary_df.to_string(index=False))
 
     print("\n========== WHAT TO LOOK FOR ==========")
-    print("Clean Pass Rate  → primary rank — TTS emotion matches reference")
-    print("Clean Near Miss  → FAILs where top-2 distributions were close (uncertain model)")
-    print("Clean Fail Rate  → clear mismatches — TTS emotion diverges from reference")
-    print("Common Mismatch  → what emotion TTS produces when it clearly fails")
-    print(f"\nConfidence threshold : {config.SER_CONFIDENCE_THRESHOLD}")
-    print(f"Near-miss margin     : {config.SER_NEAR_MISS_MARGIN}")
+    print("Emotion Pass  — PASS: top-1 match | NEAR_MISS: top-2 overlap | FAIL: no overlap")
+    print("Arousal Pass  — PASS if |ref_arousal − tts_arousal| ≤ threshold")
+    print(f"Arousal threshold: {config.AROUSAL_DELTA_THRESHOLD}")
+    print("Valence       — recorded only, not in any pass/fail (cross-lingual bias)")
+    print()
+    print("Model: MERaLiON-SER-v1 (Whisper-Medium + LoRA + ECAPA-TDNN)")
+    print("Labels: neutral, happy, sad, angry, fearful, disgusted, surprised")
 
 
 # ── Save results ───────────────────────────────────────────────────────────────
 def save_results(df, summary_df, output_dir):
     os.makedirs(output_dir, exist_ok=True)
-    seg_df = df.drop(columns=["_is_degraded"], errors="ignore")
-    seg_df.to_csv(os.path.join(output_dir, "per_segment_results.csv"), index=False)
+    df.to_csv(os.path.join(output_dir, "per_segment_results.csv"), index=False)
     summary_df.to_csv(os.path.join(output_dir, "model_summary.csv"), index=False)
     print(f"Results saved to {output_dir}")
 
 
 # ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="SER gate")
+    parser = argparse.ArgumentParser(description="SER gate — MERaLiON-SER-v1")
     parser.add_argument("--output-dir",  default=os.path.join(config.OUTPUT_DIR, "ser"))
     parser.add_argument("--models-dir",  default=None, help="Override config.MODELS_DIR")
     parser.add_argument("--ref-dir",     default=None, help="Override config.REFERENCE_DIR")

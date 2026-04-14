@@ -13,7 +13,9 @@ python run_pipeline.py --skip nisqa           # skip gates
 python run_pipeline.py --output-dir /path/to/out
 ```
 
-Valid gates: `wer`, `nisqa`, `utmos`, `speaker_sim`, `ser`, `arousal_valence`, `pitch`, `duration`, `vad`, `amplitude`, `accent`, `artifact`
+Valid gates: `wer`, `nisqa`, `utmos`, `speaker_sim`, `ser`, `pitch`, `duration`, `vad`, `amplitude`, `accent`, `artifact`
+
+Note: `arousal_valence` gate removed — merged into `ser`. The SER gate (MERaLiON-SER-v1) now outputs both categorical emotion pass/fail and arousal pass/fail in one CSV.
 
 ## Environment
 
@@ -52,16 +54,18 @@ All thresholds in `config.py`. **Calibrated values (updated Apr 2026):**
 | WER | WER ≤ 0.10, Intel ≥ 0.85 |
 | NISQA | MOS ≥ **3.75**, Noisiness ≥ 3.5, Coloration ≥ **4.0**, Loudness ≥ 3.4, ΔMOS ≥ −0.5 |
 | UTMOS | ≥ 3.0 (redundant — same verdicts as NISQA; consider removing from hard gates) |
-| Speaker sim | cosine ≥ 0.75 |
+| Speaker sim | cosine ≥ 0.50 (calibrated from episode cloning data) |
 | Duration | ±10% |
 | Pitch | median Δ ≤ 30 Hz, std ≥ 0.5× ref, abs std ≥ 20 Hz |
 | Amplitude | LUFS ±6.5, LRA ±3, centroid ±500 Hz |
 | Accent | "american" proximity ≥ 0.75 (language detector only, not accent classifier) |
 | Artifact | HNR ≥ 8 dB, pause median ≤ −35 dBFS (FAIL) / −58 dBFS (WARN), SA_combined ≤ 0.30 |
+| SER | Emotion: top-2 label overlap (PASS/NEAR_MISS/FAIL). Arousal Δ ≤ 0.15 (PASS/FAIL). |
 
 Model weights (gitignored, must be local):
 - NISQA: `weights/nisqa/weights/nisqa.tar`
 - UTMOS: `weights/utmos/simple/epoch=3-step=7459.ckpt`
+- MERaLiON-SER-v1: `/tmp/claude/hf_cache/meralion-ser-v1` — manually downloaded (proxy blocks HF hub for large blobs). Re-download: `huggingface_hub.snapshot_download('MERaLiON/MERaLiON-SER-v1', local_dir=path)`
 
 ## Datasets
 
@@ -81,7 +85,7 @@ Episode models (5): edge_tts_andrew, edge_tts_ava, gtts, kokoro, parler_mini
 
 ## Known gate limitations
 
-- **Duration, Pitch (register), Amplitude (dynamics/EQ), SER, Arousal/Valence**: unreliable with gtts proxy reference. gtts is the slowest, flattest, most muffled TTS — all comparisons skew. Meaningful only with real Hindi reference.
+- **Duration, Pitch (register), Amplitude (dynamics/EQ), SER**: unreliable with gtts proxy reference. gtts is the slowest, flattest, most muffled TTS — all comparisons skew. Meaningful only with real Hindi reference.
 - **Accent gate**: detects English vs non-English only. All English TTS score ~1.0 for american/british/indian equally.
 - **UTMOS**: misses vocoder buzz (fastspeech2, mms score 4.0+ despite audible artifacts). Artifact gate catches what UTMOS misses.
 - **WER**: intelligibility only — fastspeech2/speecht5_hifigan pass despite buzz because Whisper transcribes correctly.
