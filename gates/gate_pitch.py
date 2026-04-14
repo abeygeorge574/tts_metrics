@@ -1,25 +1,25 @@
 """
 Gate: Pitch (median register + expressiveness)
 Env : base (python 3.13)
-Uses librosa pyin to extract pitch. Checks:
+Uses PRAAT (via parselmouth) to extract F0. Checks:
   1. Absolute std floor (expressiveness minimum, no reference needed)
   2. Std ratio vs reference (relative expressiveness)
   3. Median delta vs reference (pitch register / zone)
 Segments where reference voiced ratio < 0.2 are flagged as degraded.
+
+Why PRAAT over pyin:
+  Isolated comparison (notebooks/pitch_estimator_comparison.py) showed PRAAT
+  gives deltas most consistent with perceptual listening. pyin has octave errors
+  on expressive voices (chatterbox: 45 Hz FAIL → PRAAT: 21 Hz PASS, matches ear).
+  pyin+voiced_probs filter produces absurd values (1500-2000 Hz) on high-std voices.
+  CREPE agrees with PRAAT on stable segments but diverges on ambiguous references.
 """
 
 import os
 import sys
 import argparse
 
-# librosa uses numba for pyin; set a writable cache dir before import to avoid
-# "cannot cache function '__o_fold'" errors in sandbox / read-only installs.
-if not os.environ.get("NUMBA_CACHE_DIR"):
-    os.environ["NUMBA_CACHE_DIR"] = "/tmp/claude/numba"
-os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
-
 import numpy as np
-import librosa
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -28,46 +28,42 @@ import config
 
 # ── Model loading ──────────────────────────────────────────────────────────────
 def load_model():
-    # No model to load — librosa is a library function
-    print("Pitch gate ready (librosa pyin, no model to load).")
+    try:
+        import parselmouth  # noqa: F401 — confirm available at startup
+        print("Pitch gate ready (PRAAT via parselmouth).")
+    except ImportError:
+        print("WARNING: parselmouth not installed. Install with: pip install praat-parselmouth")
     return None
 
 
 # ── Pitch computation ──────────────────────────────────────────────────────────
-# pyin does not need the native sample rate — pitch lives below 1 kHz so 16 kHz
-# is more than sufficient.  Loading at 16 kHz reduces computation ~3× for typical
-# 44.1/48 kHz broadcast files.  hop_length=1024 gives 64 ms resolution which is
-# more than enough for median/std statistics.
-_PITCH_SR       = 16000
-_PITCH_HOP      = 1024   # 64 ms at 16 kHz
-
-
 def compute_pitch(audio_path):
+    """
+    Returns (pitch_median_hz, pitch_std_hz, voiced_ratio) using PRAAT.
+    voiced_ratio = fraction of total frames where PRAAT detected pitch.
+    Falls back to (None, None, None) on error.
+    """
     try:
-        audio, sr = librosa.load(audio_path, sr=_PITCH_SR, mono=True)
+        import parselmouth
 
-        f0, voiced_flag, voiced_probs = librosa.pyin(
-            audio,
-            fmin=librosa.note_to_hz("C2"),
-            fmax=librosa.note_to_hz("C7"),
-            sr=sr,
-            hop_length=_PITCH_HOP,
+        snd   = parselmouth.Sound(audio_path)
+        pitch = snd.to_pitch(
+            time_step=0.01,    # 10 ms frames
+            pitch_floor=60.0,  # Hz — covers low male voices
+            pitch_ceiling=600.0,  # Hz — covers high female voices
         )
 
-        voiced_f0 = f0[voiced_flag]
+        f0_values    = pitch.selected_array["frequency"]  # 0 = unvoiced frame
+        total_frames = len(f0_values)
+        voiced_f0    = f0_values[f0_values > 0]
 
         if len(voiced_f0) == 0:
             print(f"  No voiced frames: {os.path.basename(audio_path)}")
             return None, None, 0.0
 
-        # Median is used (not mean) because pyin has octave errors: individual frames
-        # can land at 2× or 0.5× the true frequency. These are estimation artifacts,
-        # not real pitch events. Median is robust to them; mean is not.
-        # If pitch genuinely shifts (register mismatch), the majority of frames
-        # reflect that shift — median correctly catches it.
         pitch_median = round(float(np.median(voiced_f0)), 2)
         pitch_std    = round(float(np.std(voiced_f0)), 2)
-        voiced_ratio = round(float(np.sum(voiced_flag) / len(voiced_flag)), 3)
+        voiced_ratio = round(len(voiced_f0) / total_frames, 3)
 
         return pitch_median, pitch_std, voiced_ratio
 
