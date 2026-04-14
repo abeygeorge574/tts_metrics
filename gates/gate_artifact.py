@@ -8,6 +8,7 @@ Detects three types of audio artifacts in TTS/STS output:
    Metallic tonal buzz, vocoder overlay, non-harmonic resonance on voiced speech.
    Measured via parselmouth/Praat autocorrelation on voiced frames.
    Threshold: HNR_mean < ARTIFACT_HNR_ABS_THRESHOLD (8 dB) → ERR_VOICE_BUZZ
+   Near-miss: HNR in [6.4, 8.0) dB → NEAR_MISS
    Catches: SpeechT5-HiFiGAN, Griffin-Lim, Telugu STS tonal artifacts.
    Works on any segment length. No reference needed.
 
@@ -31,12 +32,15 @@ Detects three types of audio artifacts in TTS/STS output:
         High value = broadband noise in HF voiced region → broadband artifact.
         Threshold > ARTIFACT_SFM_HF_THRESHOLD (0.16)
    Combined score = avg of 3 normalised deviations from clean reference.
-   Threshold: combined > ARTIFACT_COMBINED_THRESHOLD (0.25) → ERR_SPECTRAL_ARTIFACT
+   Threshold: combined > ARTIFACT_COMBINED_THRESHOLD (0.15) → ERR_SPECTRAL_ARTIFACT
+   Near-miss: combined in (0.15, 0.18] → NEAR_MISS
    Validated: f5tts=0.48 (FAIL), gtts/kokoro/samantha=−0.04–0.04 (PASS),
               kokoro_v1/parler_mini=−0.11–−0.06 (PASS), fastspeech2=0.32 (FAIL).
 
-Voting: any error code → FAIL.  No errors → PASS.
-NEAR_MISS is not used — artifact presence is binary.
+Voting:
+  ERR_* → hard FAIL.
+  WARN_SILENCE_FLOOR or near-miss thresholds (no ERR_*) → NEAR_MISS.
+  Otherwise → PASS.
 
 Reference: not used for gating. Thresholds are absolute and data-validated
 against: gtts, kokoro, samantha (PASS), fastspeech2, HiFiGAN, Griffin-Lim,
@@ -356,7 +360,7 @@ def compute_spectral_artifact_score(audio_path: str) -> dict:
 
     if len(scores) >= 2:
         combined = round(float(np.mean(scores)), 4)
-        thresh   = getattr(config, "ARTIFACT_COMBINED_THRESHOLD", 0.30)
+        thresh   = getattr(config, "ARTIFACT_COMBINED_THRESHOLD", 0.15)
         sa_pass  = combined <= thresh
     else:
         combined = None
@@ -380,13 +384,18 @@ def load_model():
 def run_gate(model_state=None):
     import pandas as pd
 
-    MODELS_DIR    = config.MODELS_DIR
-    REFERENCE_DIR = config.REFERENCE_DIR   # not used for gating — kept for CSV info
+    MODELS_DIR    = (model_state or {}).get("models_dir") or config.MODELS_DIR
+    REFERENCE_DIR = (model_state or {}).get("ref_dir")    or config.REFERENCE_DIR  # not used for gating
 
     HNR_THRESHOLD      = getattr(config, "ARTIFACT_HNR_ABS_THRESHOLD",    8.0)
     PAUSE_FAIL_THRESH  = getattr(config, "ARTIFACT_SILENCE_FAIL_DB",    -45.0)
     PAUSE_WARN_THRESH  = getattr(config, "ARTIFACT_SILENCE_WARN_DB",    -58.0)
-    MIN_SEG_DUR        = getattr(config, "MIN_SEGMENT_DURATION",          2.0)
+    SA_THRESHOLD       = getattr(config, "ARTIFACT_COMBINED_THRESHOLD",   0.15)
+    NM_MARGIN          = getattr(config, "ARTIFACT_NEAR_MISS_MARGIN",     0.20)
+    MIN_SEG_DUR        = getattr(config, "MIN_SEGMENT_DURATION",           2.0)
+
+    HNR_NM_LOWER    = HNR_THRESHOLD * (1 - NM_MARGIN)       # 6.4 dB
+    SA_NM_UPPER     = SA_THRESHOLD  * (1 + NM_MARGIN)        # 0.18
 
     if not os.path.exists(MODELS_DIR):
         raise FileNotFoundError(f"Models folder not found: {MODELS_DIR}")
@@ -418,7 +427,7 @@ def run_gate(model_state=None):
                 duration = info.duration
             except Exception:
                 duration = 0.0
-            flag = "SHORT_SEGMENT" if duration < MIN_SEG_DUR else ""
+            flag = "SHORT" if duration < MIN_SEG_DUR else "—"
 
             # ── Step 1: HNR ──────────────────────────────────────────────────
             hnr_result = compute_hnr(tts_path)
@@ -426,46 +435,64 @@ def run_gate(model_state=None):
             hnr_error  = hnr_result.get("hnr_error")
 
             if hnr_mean is not None:
-                hnr_pass = hnr_mean >= HNR_THRESHOLD
+                if hnr_mean >= HNR_THRESHOLD:
+                    hnr_verdict = "PASS"
+                    hnr_label   = "PASS"
+                elif hnr_mean >= HNR_NM_LOWER:
+                    hnr_verdict = "NEAR_MISS"
+                    hnr_label   = "NEAR_MISS"
+                else:
+                    hnr_verdict = "FAIL"
+                    hnr_label   = "FAIL  ← ERR_VOICE_BUZZ"
                 hnr_str  = f"{hnr_mean:.1f} dB (voiced={hnr_result['hnr_voiced_frac']:.0%})"
-                print(f"  HNR    : {hnr_str}  → {'PASS' if hnr_pass else 'FAIL  ← ERR_VOICE_BUZZ'}")
+                print(f"  HNR    : {hnr_str}  → {hnr_label}")
             else:
-                hnr_pass = None
+                hnr_verdict = None
                 print(f"  HNR    : unavailable ({hnr_error})")
 
             # ── Step 2 + 3: Pause existence + median dBFS ────────────────────
             pause_result = compute_pause_median_db(tts_path)
 
             if pause_result["silence_na"]:
-                pause_pass = None
-                pause_warn = False
-                median_db  = None
+                pause_verdict = None
+                median_db     = None
                 print(f"  Pause  : no real pauses ≥160ms detected  → N/A")
             else:
-                median_db  = pause_result["median_db"]
+                median_db = pause_result["median_db"]
                 if median_db > PAUSE_FAIL_THRESH:
-                    pause_pass = False
-                    pause_warn = False
-                    pause_label = "FAIL  ← ERR_BACKGROUND_STATIC"
+                    pause_verdict = "FAIL"
+                    pause_label   = "FAIL  ← ERR_BACKGROUND_STATIC"
                 elif median_db > PAUSE_WARN_THRESH:
-                    pause_pass = True
-                    pause_warn = True
-                    pause_label = "WARN  ← WARN_SILENCE_FLOOR"
+                    # WARN_SILENCE_FLOOR maps to NEAR_MISS in voting
+                    pause_verdict = "NEAR_MISS"
+                    pause_label   = "NEAR_MISS  ← WARN_SILENCE_FLOOR"
                 else:
-                    pause_pass = True
-                    pause_warn = False
-                    pause_label = "PASS"
+                    pause_verdict = "PASS"
+                    pause_label   = "PASS"
                 print(f"  Pause  : {pause_result['n_real_pauses']} pauses "
                       f"({pause_result['real_pause_frac']:.0%} of audio)  "
                       f"median={median_db:.1f} dBFS  → {pause_label}")
 
             # ── Step 4: Spectral shape artifact score ─────────────────────────
-            sa_result = compute_spectral_artifact_score(tts_path)
-            sa_pass    = sa_result.get("sa_pass")
+            sa_result   = compute_spectral_artifact_score(tts_path)
             sa_combined = sa_result.get("combined")
-            h1h2       = sa_result.get("h1h2")
-            cep_midq   = sa_result.get("cep_midq")
-            sfm_hf     = sa_result.get("sfm_hf")
+            h1h2        = sa_result.get("h1h2")
+            cep_midq    = sa_result.get("cep_midq")
+            sfm_hf      = sa_result.get("sfm_hf")
+
+            if sa_combined is not None:
+                if sa_combined <= SA_THRESHOLD:
+                    sa_verdict = "PASS"
+                    sa_label   = "PASS"
+                elif sa_combined <= SA_NM_UPPER:
+                    sa_verdict = "NEAR_MISS"
+                    sa_label   = "NEAR_MISS"
+                else:
+                    sa_verdict = "FAIL"
+                    sa_label   = "FAIL  ← ERR_SPECTRAL_ARTIFACT"
+            else:
+                sa_verdict = None
+                sa_label   = "N/A"
 
             def _fmt(v, spec):
                 return format(v, spec) if v is not None else "N/A"
@@ -475,86 +502,100 @@ def run_gate(model_state=None):
                     f"H1H2={_fmt(h1h2, '.2f')}, CepMidQ={_fmt(cep_midq, '.4f')},"
                     f" SFM_HF={_fmt(sfm_hf, '.4f')}  combined={sa_combined:.3f}"
                 )
-                print(f"  SpectralShape: {sa_str}  "
-                      f"→ {'PASS' if sa_pass else 'FAIL  ← ERR_SPECTRAL_ARTIFACT'}")
+                print(f"  SpectralShape: {sa_str}  → {sa_label}")
             else:
                 print(f"  SpectralShape: insufficient data  → N/A")
 
             # ── Voting ────────────────────────────────────────────────────────
-            # ERR_* → hard FAIL.  WARN_* → PASS with advisory flag.
-            error_flags = []
-            warn_flags  = []
-            if hnr_mean is not None and not hnr_pass:
+            # ERR_* (verdict==FAIL) → hard FAIL.
+            # NEAR_MISS (WARN_* or near-miss thresholds) → NEAR_MISS if no ERR_*.
+            # Otherwise → PASS.
+            error_flags   = []
+            near_miss_flags = []
+
+            if hnr_verdict == "FAIL":
                 error_flags.append("ERR_VOICE_BUZZ")
-            if pause_pass is not None and not pause_pass:
+            elif hnr_verdict == "NEAR_MISS":
+                near_miss_flags.append("WARN_HNR_LOW")
+
+            if pause_verdict == "FAIL":
                 error_flags.append("ERR_BACKGROUND_STATIC")
-            elif pause_warn:
-                warn_flags.append("WARN_SILENCE_FLOOR")
-            if sa_pass is not None and not sa_pass:
+            elif pause_verdict == "NEAR_MISS":
+                near_miss_flags.append("WARN_SILENCE_FLOOR")
+
+            if sa_verdict == "FAIL":
                 error_flags.append("ERR_SPECTRAL_ARTIFACT")
+            elif sa_verdict == "NEAR_MISS":
+                near_miss_flags.append("WARN_SA_BORDERLINE")
 
             if error_flags:
                 result = "FAIL"
-            elif hnr_mean is None and pause_pass is None:
+            elif near_miss_flags:
+                result = "NEAR_MISS"
+            elif hnr_verdict is None and pause_verdict is None:
                 result = "SKIP"      # no metrics could run
             else:
                 result = "PASS"
 
-            all_flags = error_flags + warn_flags
+            all_flags = error_flags + near_miss_flags
             flags_str = ",".join(all_flags) if all_flags else ""
-            if flag:
-                flags_str = f"{flag},{flags_str}" if flags_str else flag
 
             print(f"  Result : {result}" + (f"  [{flags_str}]" if flags_str else ""))
 
             results.append({
-                "Model"           : model,
-                "Sample"          : sample_name,
-                "Duration_s"      : round(duration, 2),
+                "Model"                                                 : model,
+                "Sample"                                                : sample_name,
+                "Duration_s"                                            : round(duration, 2),
                 # HNR
-                "HNR_Mean"        : hnr_mean,
-                "HNR_Voiced_Frac" : hnr_result.get("hnr_voiced_frac"),
-                "HNR_Pass"        : ("PASS" if hnr_pass else "FAIL") if hnr_pass is not None else "N/A",
+                "HNR Mean dB (threshold≥8.0dB, near_miss≥6.4dB)"       : hnr_mean,
+                "HNR_Voiced_Frac"                                       : hnr_result.get("hnr_voiced_frac"),
+                "HNR Pass (PASS/NEAR_MISS/FAIL)"                        : hnr_verdict if hnr_verdict is not None else "N/A",
                 # Pause / median dBFS
-                "Real_Pauses"     : pause_result["n_real_pauses"],
-                "Pause_Frac"      : pause_result["real_pause_frac"],
-                "Pause_Median_DB" : median_db,
-                "Pause_Pass"      : ("WARN" if pause_warn else ("PASS" if pause_pass else "FAIL")) if pause_pass is not None else "N/A",
+                "Real_Pauses"                                           : pause_result["n_real_pauses"],
+                "Pause_Frac"                                            : pause_result["real_pause_frac"],
+                "Pause_Median_DB"                                       : median_db,
+                "Pause Pass (PASS/NEAR_MISS/FAIL)"                      : pause_verdict if pause_verdict is not None else "N/A",
                 # Spectral shape artifact score
-                "SA_H1H2"         : h1h2,
-                "SA_CepMidQ"      : cep_midq,
-                "SA_SFM_HF"       : sfm_hf,
-                "SA_Combined"     : sa_combined,
-                "SA_Pass"         : ("PASS" if sa_pass else "FAIL") if sa_pass is not None else "N/A",
+                "SA_H1H2"                                               : h1h2,
+                "SA_CepMidQ"                                            : cep_midq,
+                "SA_SFM_HF"                                             : sfm_hf,
+                "SA Combined Score (threshold≤0.15, near_miss≤0.18)"    : sa_combined,
+                "SA Pass (PASS/NEAR_MISS/FAIL)"                         : sa_verdict if sa_verdict is not None else "N/A",
                 # Overall
-                "Error_Flags"     : flags_str,
-                "Pass"            : result,
-                "Flag"            : flag,
+                "Error Flags (ERR_*=fail|WARN_*=near_miss)"             : flags_str,
+                "Final Pass (PASS/NEAR_MISS/FAIL)"                      : result,
+                "Flag (—=clean|SHORT=<2s)"                              : flag,
             })
 
     df = pd.DataFrame(results)
 
     # Summary
+    fp_col  = "Final Pass (PASS/NEAR_MISS/FAIL)"
+    hnr_col = "HNR Mean dB (threshold≥8.0dB, near_miss≥6.4dB)"
+    sa_col  = "SA Combined Score (threshold≤0.15, near_miss≤0.18)"
+
     summary_rows = []
     for model in model_folders:
-        mdf = df[df["Model"] == model]
-        pass_count = (mdf["Pass"] == "PASS").sum()
-        fail_count = (mdf["Pass"] == "FAIL").sum()
+        mdf        = df[df["Model"] == model]
+        pass_count = (mdf[fp_col] == "PASS").sum()
+        nm_count   = (mdf[fp_col] == "NEAR_MISS").sum()
+        fail_count = (mdf[fp_col] == "FAIL").sum()
         summary_rows.append({
-            "Model"           : model,
-            "Pass_Rate"       : f"{pass_count}/{len(mdf)}",
-            "Fail"            : int(fail_count),
-            "Mean_HNR_dB"     : round(mdf["HNR_Mean"].dropna().mean(), 2)
-                                 if mdf["HNR_Mean"].notna().any() else None,
-            "Mean_Pause_dBFS" : round(mdf["Pause_Median_DB"].dropna().mean(), 2)
-                                 if mdf["Pause_Median_DB"].notna().any() else None,
-            "Mean_SA_H1H2"    : round(mdf["SA_H1H2"].dropna().mean(), 3)
-                                 if mdf["SA_H1H2"].notna().any() else None,
-            "Mean_SA_Combined": round(mdf["SA_Combined"].dropna().mean(), 3)
-                                 if mdf["SA_Combined"].notna().any() else None,
-            "Error_Flags"     : "; ".join(
-                                 f for f in mdf["Error_Flags"].dropna() if f
-                                 ) or "—",
+            "Model"                          : model,
+            "Pass Rate (PASS / total)"       : f"{pass_count}/{len(mdf)}",
+            "Near Miss Rate (NEAR_MISS / total)": f"{nm_count}/{len(mdf)}",
+            "Fail"                           : int(fail_count),
+            "Mean_HNR_dB"                    : round(mdf[hnr_col].dropna().mean(), 2)
+                                               if mdf[hnr_col].notna().any() else None,
+            "Mean_Pause_dBFS"                : round(mdf["Pause_Median_DB"].dropna().mean(), 2)
+                                               if mdf["Pause_Median_DB"].notna().any() else None,
+            "Mean_SA_H1H2"                   : round(mdf["SA_H1H2"].dropna().mean(), 3)
+                                               if mdf["SA_H1H2"].notna().any() else None,
+            "Mean_SA_Combined"               : round(mdf[sa_col].dropna().mean(), 3)
+                                               if mdf[sa_col].notna().any() else None,
+            "Error_Flags"                    : "; ".join(
+                                               f for f in mdf["Error Flags (ERR_*=fail|WARN_*=near_miss)"].dropna() if f
+                                               ) or "—",
         })
     summary_df = pd.DataFrame(summary_rows)
     summary_df = summary_df.sort_values("Fail", ascending=False)
@@ -566,13 +607,23 @@ def print_results(df, summary_df):
     import pandas as pd
     pd.set_option("display.max_columns", None)
     pd.set_option("display.width", 260)
+
+    fp_col   = "Final Pass (PASS/NEAR_MISS/FAIL)"
+    hnr_col  = "HNR Mean dB (threshold≥8.0dB, near_miss≥6.4dB)"
+    hnrp_col = "HNR Pass (PASS/NEAR_MISS/FAIL)"
+    sa_col   = "SA Combined Score (threshold≤0.15, near_miss≤0.18)"
+    sap_col  = "SA Pass (PASS/NEAR_MISS/FAIL)"
+    pp_col   = "Pause Pass (PASS/NEAR_MISS/FAIL)"
+    err_col  = "Error Flags (ERR_*=fail|WARN_*=near_miss)"
+    flag_col = "Flag (—=clean|SHORT=<2s)"
+
     print("\n========== PER-SEGMENT RESULTS ==========")
     print(df[[
         "Model", "Sample", "Duration_s",
-        "HNR_Mean", "HNR_Pass",
-        "Real_Pauses", "Pause_Median_DB", "Pause_Pass",
-        "SA_H1H2", "SA_CepMidQ", "SA_SFM_HF", "SA_Combined", "SA_Pass",
-        "Error_Flags", "Pass", "Flag",
+        hnr_col, hnrp_col,
+        "Real_Pauses", "Pause_Median_DB", pp_col,
+        "SA_H1H2", "SA_CepMidQ", "SA_SFM_HF", sa_col, sap_col,
+        err_col, fp_col, flag_col,
     ]].to_string(index=False))
 
     print("\n========== MODEL SUMMARY ==========")
@@ -581,13 +632,15 @@ def print_results(df, summary_df):
     print("\n========== GUIDE ==========")
     print(f"  HNR_Mean      < {getattr(config, 'ARTIFACT_HNR_ABS_THRESHOLD', 8.0):.0f} dB"
           f"   → ERR_VOICE_BUZZ       (tonal/metallic buzz on voiced speech)")
+    print(f"  HNR_Mean in [{getattr(config, 'ARTIFACT_HNR_ABS_THRESHOLD', 8.0) * (1 - getattr(config, 'ARTIFACT_NEAR_MISS_MARGIN', 0.20)):.1f}, {getattr(config, 'ARTIFACT_HNR_ABS_THRESHOLD', 8.0):.0f}) → WARN_HNR_LOW (NEAR_MISS)")
     print(f"  Pause_Median  > {getattr(config, 'ARTIFACT_SILENCE_FAIL_DB', -45.0):.0f} dBFS"
           f"  → ERR_BACKGROUND_STATIC (hard FAIL — clearly audible broadband noise in pauses)")
     print(f"  Pause_Median  > {getattr(config, 'ARTIFACT_SILENCE_WARN_DB', -58.0):.0f} dBFS"
-          f"  → WARN_SILENCE_FLOOR    (present but subtle — not a FAIL)")
+          f"  → WARN_SILENCE_FLOOR    (NEAR_MISS — present but subtle)")
     print(f"  Pause_Pass=N/A → no real pauses ≥160ms (short segment or continuous speech)")
-    print(f"  SA_Combined   > {getattr(config, 'ARTIFACT_COMBINED_THRESHOLD', 0.25):.2f}"
+    print(f"  SA_Combined   > {getattr(config, 'ARTIFACT_COMBINED_THRESHOLD', 0.15):.2f}"
           f"       → ERR_SPECTRAL_ARTIFACT (H1/H2 + cepstral + SFM_HF composite)")
+    print(f"  SA_Combined in ({getattr(config, 'ARTIFACT_COMBINED_THRESHOLD', 0.15):.2f}, {getattr(config, 'ARTIFACT_COMBINED_THRESHOLD', 0.15) * (1 + getattr(config, 'ARTIFACT_NEAR_MISS_MARGIN', 0.20)):.2f}] → WARN_SA_BORDERLINE (NEAR_MISS)")
 
 
 def save_results(df, summary_df, output_dir):
@@ -599,10 +652,19 @@ def save_results(df, summary_df, output_dir):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Artifact / Vocoder Buzz Detector gate")
-    parser.add_argument("--output-dir", default=os.path.join(config.OUTPUT_DIR, "artifact"))
+    parser.add_argument("--output-dir",  default=os.path.join(config.OUTPUT_DIR, "artifact"))
+    parser.add_argument("--models-dir",  default=None, help="Override config.MODELS_DIR")
+    parser.add_argument("--ref-dir",     default=None, help="Override config.REFERENCE_DIR")
     args = parser.parse_args()
 
-    model_state    = load_model()
+    model_state = load_model()
+    if model_state is None:
+        model_state = {}
+    if args.models_dir:
+        model_state["models_dir"] = os.path.abspath(args.models_dir)
+    if args.ref_dir:
+        model_state["ref_dir"] = os.path.abspath(args.ref_dir)
+
     df, summary_df = run_gate(model_state)
     print_results(df, summary_df)
     save_results(df, summary_df, args.output_dir)

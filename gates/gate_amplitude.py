@@ -228,47 +228,47 @@ def run_gate(model_state=None):
                 print(f"  Result : {final_pass} | Degraded: {is_degraded} | Peak: {peak_flag}")
 
                 results.append({
-                    "Model"         : model,
-                    "Sample"        : sample_name,
-                    "Ref LUFS"      : ref_lufs,
-                    "TTS LUFS"      : tts_lufs,
-                    "LUFS Delta"    : lufs_diff,
-                    "Ref LRA"       : ref_lra,
-                    "TTS LRA"       : tts_lra,
-                    "LRA Delta"     : lra_diff,
-                    "Ref Cent"      : ref_cent,
-                    "TTS Cent"      : tts_cent,
-                    "Cent Delta"    : cent_diff,
-                    "Ref Peak"      : ref_peak,
-                    "TTS Peak"      : tts_peak,
-                    "TTS Clip Rate" : tts_clip_rate,
-                    "Peak Flag"     : peak_flag,
-                    "Final Pass"    : final_pass,
-                    "Ref Flag"      : ref_flag,
-                    "_is_degraded"  : is_degraded,
+                    "Model"                                                                       : model,
+                    "Sample"                                                                      : sample_name,
+                    "Ref LUFS"                                                                    : ref_lufs,
+                    "TTS LUFS"                                                                    : tts_lufs,
+                    "LUFS Delta (threshold<=6.5)"                                                 : lufs_diff,
+                    "Ref LRA"                                                                     : ref_lra,
+                    "TTS LRA"                                                                     : tts_lra,
+                    "LRA Delta (threshold<=3.0)"                                                  : lra_diff,
+                    "Ref Cent"                                                                    : ref_cent,
+                    "TTS Cent"                                                                    : tts_cent,
+                    "Cent Delta (threshold<=500Hz)"                                               : cent_diff,
+                    "Ref Peak"                                                                    : ref_peak,
+                    "TTS Peak"                                                                    : tts_peak,
+                    "TTS Clip Rate % (NEAR_CLIP=0-0.1%|CLIPPING>=0.1%)"                          : round(tts_clip_rate * 100, 4),
+                    "Peak Flag"                                                                   : peak_flag,
+                    "Final Pass (PASS/NEAR_MISS/REVIEW/FAIL)"                                     : final_pass,
+                    "Ref Flag (—=clean|REF_CLIPPED|REF_LUFS_DEGRADED|SHORT_SEGMENT)"              : ref_flag,
+                    "_is_degraded"                                                                : is_degraded,
                 })
 
             except Exception as e:
                 print(f"  ERROR: {e}")
                 results.append({
-                    "Model"         : model,
-                    "Sample"        : sample_name,
-                    "Ref LUFS"      : None,
-                    "TTS LUFS"      : None,
-                    "LUFS Delta"    : None,
-                    "Ref LRA"       : None,
-                    "TTS LRA"       : None,
-                    "LRA Delta"     : None,
-                    "Ref Cent"      : None,
-                    "TTS Cent"      : None,
-                    "Cent Delta"    : None,
-                    "Ref Peak"      : None,
-                    "TTS Peak"      : None,
-                    "TTS Clip Rate" : None,
-                    "Peak Flag"     : "ERROR",
-                    "Final Pass"    : "ERROR",
-                    "Ref Flag"      : "ERROR",
-                    "_is_degraded"  : False,
+                    "Model"                                                                       : model,
+                    "Sample"                                                                      : sample_name,
+                    "Ref LUFS"                                                                    : None,
+                    "TTS LUFS"                                                                    : None,
+                    "LUFS Delta (threshold<=6.5)"                                                 : None,
+                    "Ref LRA"                                                                     : None,
+                    "TTS LRA"                                                                     : None,
+                    "LRA Delta (threshold<=3.0)"                                                  : None,
+                    "Ref Cent"                                                                    : None,
+                    "TTS Cent"                                                                    : None,
+                    "Cent Delta (threshold<=500Hz)"                                               : None,
+                    "Ref Peak"                                                                    : None,
+                    "TTS Peak"                                                                    : None,
+                    "TTS Clip Rate % (NEAR_CLIP=0-0.1%|CLIPPING>=0.1%)"                          : None,
+                    "Peak Flag"                                                                   : "ERROR",
+                    "Final Pass (PASS/NEAR_MISS/REVIEW/FAIL)"                                     : "ERROR",
+                    "Ref Flag (—=clean|REF_CLIPPED|REF_LUFS_DEGRADED|SHORT_SEGMENT)"              : "ERROR",
+                    "_is_degraded"                                                                : False,
                 })
 
     print("\n\nAll evaluations complete.")
@@ -278,18 +278,18 @@ def run_gate(model_state=None):
     summary_rows = []
     for model in model_folders:
         model_df    = df[df["Model"] == model]
-        clean_df    = model_df[~model_df["_is_degraded"] & (model_df["Final Pass"] != "ERROR")]
+        clean_df    = model_df[~model_df["_is_degraded"] & (model_df["Final Pass (PASS/NEAR_MISS/REVIEW/FAIL)"] != "ERROR")]
         degraded_df = model_df[model_df["_is_degraded"]]
         total       = len(model_df)
 
         clean_total = len(clean_df)
         # PASS +NEAR_CLIP is still a pass — only the warning suffix differs
-        clean_pass  = clean_df["Final Pass"].str.startswith("PASS").sum()
+        clean_pass  = clean_df["Final Pass (PASS/NEAR_MISS/REVIEW/FAIL)"].str.startswith("PASS").sum()
 
         deg_total   = len(degraded_df)
-        deg_pass    = (degraded_df["Final Pass"] == "PASS").sum()
 
-        fp = model_df["Final Pass"]
+        FINAL_COL = "Final Pass (PASS/NEAR_MISS/REVIEW/FAIL)"
+        fp = model_df[FINAL_COL]
         clipping_count  = fp.str.contains("Clipping",     na=False).sum()
         volume_count    = fp.str.contains("Volume",       na=False).sum()
         dynamics_count  = fp.str.contains("Dynamics",     na=False).sum()
@@ -300,25 +300,26 @@ def run_gate(model_state=None):
         error_count     = (fp == "ERROR").sum()
 
         # Degraded pass rate: REVIEW counts as "pass" for degraded segments
-        deg_pass = (degraded_df["Final Pass"].isin(["REVIEW"]) |
-                    degraded_df["Final Pass"].str.startswith("NEAR_MISS", na=False) |
-                    (degraded_df["Final Pass"] == "PASS")).sum()
+        deg_fp   = degraded_df[FINAL_COL]
+        deg_pass = (deg_fp.isin(["REVIEW"]) |
+                    deg_fp.str.startswith("NEAR_MISS", na=False) |
+                    deg_fp.str.startswith("PASS", na=False)).sum()
 
         summary_rows.append({
-            "Model"             : model,
-            "Total Segments"    : total,
-            "Clean Segments"    : clean_total,
-            "Clean Pass Rate"   : f"{clean_pass}/{clean_total}"  if clean_total > 0 else "—",
-            "Degraded Segments" : deg_total,
-            "Degraded Pass Rate": f"{deg_pass}/{deg_total}"      if deg_total > 0 else "—",
-            "Near Miss"         : near_miss_count,
-            "Review"            : review_count,
-            "Near Clip"         : near_clip_count,
-            "Clipping Fails"    : clipping_count,
-            "Volume Fails"      : volume_count,
-            "Dynamics Fails"    : dynamics_count,
-            "EQ Fails"          : eq_count,
-            "Errors"            : error_count,
+            "Model"                       : model,
+            "Total Segments"              : total,
+            "Clean Segments"              : clean_total,
+            "Clean Pass Rate (PASS only)" : f"{clean_pass}/{clean_total}"  if clean_total > 0 else "—",
+            "Degraded Segments"           : deg_total,
+            "Degraded Pass Rate"          : f"{deg_pass}/{deg_total}"      if deg_total > 0 else "—",
+            "Near Miss"                   : near_miss_count,
+            "Review"                      : review_count,
+            "Near Clip"                   : near_clip_count,
+            "Clipping Fails"              : clipping_count,
+            "Volume Fails"                : volume_count,
+            "Dynamics Fails"              : dynamics_count,
+            "EQ Fails"                    : eq_count,
+            "Errors"                      : error_count,
         })
 
     summary_df = pd.DataFrame(summary_rows)
@@ -328,7 +329,7 @@ def run_gate(model_state=None):
             return -1
         return int(rate_str.split("/")[0])
 
-    summary_df["_clean_pass_num"]    = summary_df["Clean Pass Rate"].apply(parse_rate)
+    summary_df["_clean_pass_num"]    = summary_df["Clean Pass Rate (PASS only)"].apply(parse_rate)
     summary_df["_degraded_pass_num"] = summary_df["Degraded Pass Rate"].apply(parse_rate)
 
     summary_df = summary_df.sort_values(
@@ -344,18 +345,12 @@ def run_gate(model_state=None):
 # ── Print results ──────────────────────────────────────────────────────────────
 def print_results(df, summary_df):
     print("\n========== FULL PER-SEGMENT RESULTS ==========")
-    print(df[[
-        "Model", "Sample",
-        "Ref LUFS", "TTS LUFS", "LUFS Delta",
-        "Ref LRA",  "TTS LRA",  "LRA Delta",
-        "Ref Cent", "TTS Cent", "Cent Delta",
-        "Ref Peak", "TTS Peak", "TTS Clip Rate", "Peak Flag",
-        "Final Pass", "Ref Flag"
-    ]].to_string(index=False))
+    display_cols = [c for c in df.columns if not c.startswith("_")]
+    print(df[display_cols].to_string(index=False))
 
     print("\n========== MODEL COMPARISON SUMMARY ==========")
     print(summary_df[[
-        "Model", "Clean Pass Rate", "Degraded Pass Rate",
+        "Model", "Clean Pass Rate (PASS only)", "Degraded Pass Rate",
         "Near Miss", "Review", "Near Clip",
         "Clipping Fails", "Volume Fails", "Dynamics Fails", "EQ Fails"
     ]].to_string(index=False))

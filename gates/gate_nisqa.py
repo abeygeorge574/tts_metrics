@@ -4,6 +4,12 @@ Env : base (python 3.13)
 Scores TTS audio with the NISQA model. Supports absolute thresholds
 and delta-vs-reference thresholds with hybrid pass/fail logic.
 
+NEAR_MISS: absolute barely fails — all failing dimensions within 20% of their threshold.
+  e.g. MOS threshold=3.75 → NEAR_MISS if MOS ∈ [3.0, 3.75) and all other dims borderline.
+REVIEW   : absolute fails but delta vs reference passes — TTS is like reference, both borderline.
+           Needs human listen before failing the segment.
+DEGRADED : reference fails NISQA_REF_THRESHOLDS — delta comparison skipped (REF_QUALITY flag).
+
 Files longer than ~2.5 min are automatically chunked into 30 s clips,
 each clip is scored, and the five metrics are averaged across chunks.
 """
@@ -150,6 +156,19 @@ def get_absolute_pass(scores):
 def get_delta_pass(deltas):
     return all(deltas[k] >= config.NISQA_DELTA_THRESHOLDS[k] for k in config.NISQA_DELTA_THRESHOLDS)
 
+def get_absolute_near_miss(scores):
+    """
+    Returns True if all failing absolute dimensions are within NEAR_MISS_MARGIN of threshold.
+    Used to distinguish NEAR_MISS (borderline) from hard FAIL.
+    """
+    near_miss_margin = 0.20
+    for k, threshold in config.NISQA_THRESHOLDS.items():
+        if scores[k] < threshold:
+            near_miss_floor = threshold * (1.0 - near_miss_margin)
+            if scores[k] < near_miss_floor:
+                return False  # This dimension fails badly — not near-miss
+    return True  # All failing dims are borderline
+
 def get_primary_failure_with_delta(deltas):
     return min(deltas, key=deltas.get)
 
@@ -240,8 +259,11 @@ def run_gate(model_state=None):
                     "Coloration": None, "Loudness": None,
                     "ΔMOS": None, "ΔNoisiness": None, "ΔDiscontinuity": None,
                     "ΔColoration": None, "ΔLoudness": None,
-                    "Absolute": "SKIP", "Final": "SKIP",
-                    "Primary Failure": "ERROR", "Flag": "ERROR",
+                    "Absolute Pass (PASS=all≥threshold|FAIL)": "SKIP",
+                    "Final Pass (PASS/NEAR_MISS/REVIEW/FAIL)": "SKIP",
+                    "Primary Failure Dimension": "ERROR",
+                    "Ref Flag (—=clean|REF_QUALITY=ref_below_floor|NO_REF|SHORT_SEGMENT)": "ERROR",
+                    "_is_clean": False,
                 })
                 continue
 
@@ -284,7 +306,7 @@ def run_gate(model_state=None):
                                        if ref_scores[k] < config.NISQA_REF_THRESHOLDS[k]]
                         ref_flag = "REF_QUALITY"
                         print(f"  Reference below quality floor on {failed_dims} — skipping delta")
-                    else:
+                    elif ref_scores is not None:
                         deltas = {
                             k: round(tts_scores[k] - ref_scores[k], 3)
                             for k in tts_scores
@@ -296,53 +318,69 @@ def run_gate(model_state=None):
             else:
                 ref_flag = "NO_REF"
 
+            # ── Final verdict ──────────────────────────────────────────────────
+            # PASS:      absolute passes (delta is bonus info only)
+            # NEAR_MISS: absolute barely fails, delta also fails (or unavailable)
+            # REVIEW:    absolute fails but delta passes — TTS similar to reference
+            # FAIL:      absolute fails and delta also fails (or unavailable), not near-miss
             if deltas is not None:
                 if absolute_pass and delta_pass:
                     final_result    = "PASS"
                     primary_failure = "—"
                 elif absolute_pass and not delta_pass:
-                    final_result    = "PASS"
+                    final_result    = "PASS"  # hybrid: absolute OK even if degraded vs ref
                     primary_failure = get_primary_failure_with_delta(deltas)
                 elif not absolute_pass and delta_pass:
-                    final_result    = "REVIEW"
+                    final_result    = "REVIEW"  # absolute fails but delta is fine — listen before failing
                     primary_failure = get_primary_failure_with_delta(deltas)
-                else:
-                    final_result    = "FAIL"
+                else:  # both fail
+                    if get_absolute_near_miss(tts_scores):
+                        final_result = "NEAR_MISS"
+                    else:
+                        final_result = "FAIL"
                     primary_failure = get_primary_failure_with_delta(deltas)
             else:
                 if absolute_pass:
                     final_result    = "PASS"
                     primary_failure = "—"
                 else:
-                    final_result    = "FAIL"
+                    if get_absolute_near_miss(tts_scores):
+                        final_result = "NEAR_MISS"
+                    else:
+                        final_result = "FAIL"
                     primary_failure = get_primary_failure_without_delta(tts_scores)
 
-            print(f"  Result : {final_result} | Primary failure: {primary_failure} | Flag: {ref_flag or '—'}")
+            flag_val = "SHORT_SEGMENT" if is_short else (ref_flag or "—")
+            is_clean = flag_val not in ("REF_QUALITY", "SHORT_SEGMENT", "NO_REF", "REF_ERROR")
+
+            print(f"  Result : {final_result} | Primary failure: {primary_failure} | Flag: {flag_val}")
 
             row = {
-                "Model"          : model,
-                "Sample"         : sample_name,
-                "MOS"            : tts_scores["MOS"],
-                "Noisiness"      : tts_scores["Noisiness"],
-                "Discontinuity"  : tts_scores["Discontinuity"],
-                "Coloration"     : tts_scores["Coloration"],
-                "Loudness"       : tts_scores["Loudness"],
-                "ΔMOS"           : deltas["MOS"]           if deltas else None,
-                "ΔNoisiness"     : deltas["Noisiness"]     if deltas else None,
-                "ΔDiscontinuity" : deltas["Discontinuity"] if deltas else None,
-                "ΔColoration"    : deltas["Coloration"]    if deltas else None,
-                "ΔLoudness"      : deltas["Loudness"]      if deltas else None,
-                "Absolute"       : "PASS" if absolute_pass else "FAIL",
-                "Final"          : final_result,
-                "Primary Failure": primary_failure,
-                "Flag"           : "SHORT_SEGMENT" if is_short else (ref_flag or "—"),
+                "Model"                                                               : model,
+                "Sample"                                                              : sample_name,
+                "MOS"                                                                 : tts_scores["MOS"],
+                "Noisiness"                                                           : tts_scores["Noisiness"],
+                "Discontinuity"                                                       : tts_scores["Discontinuity"],
+                "Coloration"                                                          : tts_scores["Coloration"],
+                "Loudness"                                                            : tts_scores["Loudness"],
+                "ΔMOS"                                                                : deltas["MOS"]           if deltas else None,
+                "ΔNoisiness"                                                          : deltas["Noisiness"]     if deltas else None,
+                "ΔDiscontinuity"                                                      : deltas["Discontinuity"] if deltas else None,
+                "ΔColoration"                                                         : deltas["Coloration"]    if deltas else None,
+                "ΔLoudness"                                                           : deltas["Loudness"]      if deltas else None,
+                "Absolute Pass (PASS=all≥threshold|FAIL)"                             : "PASS" if absolute_pass else "FAIL",
+                "Final Pass (PASS/NEAR_MISS/REVIEW/FAIL)"                             : final_result,
+                "Primary Failure Dimension"                                           : primary_failure,
+                "Ref Flag (—=clean|REF_QUALITY=ref_below_floor|NO_REF|SHORT_SEGMENT)" : flag_val,
+                "_is_clean"                                                           : is_clean,
             }
             results.append(row)
 
     print("\n\nAll evaluations complete.")
 
     df = pd.DataFrame(results)
-    df["_is_clean"] = df["Flag"].apply(lambda x: x not in ("REF_QUALITY", "SHORT_SEGMENT"))
+
+    FINAL_COL = "Final Pass (PASS/NEAR_MISS/REVIEW/FAIL)"
 
     summary_rows = []
     for model in model_folders:
@@ -356,31 +394,32 @@ def run_gate(model_state=None):
         clean_total  = len(clean_df)
         deg_total    = len(degraded_df)
 
-        clean_pass   = (clean_df["Final"] == "PASS").sum()
-        clean_review = (clean_df["Final"] == "REVIEW").sum()
-        clean_fail   = (clean_df["Final"] == "FAIL").sum()
+        clean_pass   = clean_df[FINAL_COL].str.startswith("PASS").sum()
+        clean_nm     = clean_df[FINAL_COL].str.startswith("NEAR_MISS").sum()
+        clean_review = (clean_df[FINAL_COL] == "REVIEW").sum()
+        clean_fail   = clean_df[FINAL_COL].str.startswith("FAIL").sum()
 
-        deg_pass     = (degraded_df["Final"] == "PASS").sum()
-        deg_review   = (degraded_df["Final"] == "REVIEW").sum()
-        deg_fail     = (degraded_df["Final"] == "FAIL").sum()
+        deg_pass     = degraded_df[FINAL_COL].str.startswith("PASS").sum()
+        deg_review   = (degraded_df[FINAL_COL] == "REVIEW").sum()
+        deg_fail     = degraded_df[FINAL_COL].str.startswith("FAIL").sum()
 
-        failure_counts      = model_df[model_df["Primary Failure"] != "—"]["Primary Failure"].value_counts()
+        failure_counts      = model_df[model_df["Primary Failure Dimension"] != "—"]["Primary Failure Dimension"].value_counts()
         most_common_failure = failure_counts.index[0] if len(failure_counts) > 0 else "—"
 
         summary_rows.append({
-            "Model"              : model,
-            "Total Segments"     : total,
-            "Clean Segments"     : clean_total,
-            "Clean Pass Rate"    : f"{clean_pass}/{clean_total}"   if clean_total > 0 else "—",
-            "Clean Review Rate"  : f"{clean_review}/{clean_total}" if clean_total > 0 else "—",
-            "Clean Fail Rate"    : f"{clean_fail}/{clean_total}"   if clean_total > 0 else "—",
-            "Degraded Segments"  : deg_total,
-            "Degraded Pass Rate" : f"{deg_pass}/{deg_total}"       if deg_total > 0 else "—",
-            "Degraded Review Rate": f"{deg_review}/{deg_total}"    if deg_total > 0 else "—",
-            "Degraded Fail Rate" : f"{deg_fail}/{deg_total}"       if deg_total > 0 else "—",
-            "Median MOS"         : round(mos_values.median(), 3),
-            "Mean ΔMOS"          : round(delta_values.mean(), 3)   if len(delta_values) > 0 else None,
-            "Top Failure Mode"   : most_common_failure,
+            "Model"                       : model,
+            "Total Segments"              : total,
+            "Clean Segments"              : clean_total,
+            "Clean Pass Rate (PASS only)" : f"{clean_pass}/{clean_total}"   if clean_total > 0 else "—",
+            "Near Miss"                   : clean_nm,
+            "Review (clean)"              : clean_review,
+            "Clean Fail Rate"             : f"{clean_fail}/{clean_total}"   if clean_total > 0 else "—",
+            "Degraded Segments"           : deg_total,
+            "Degraded Pass Rate"          : f"{deg_pass}/{deg_total}"       if deg_total > 0 else "—",
+            "Degraded Review"             : deg_review,
+            "Median MOS"                  : round(mos_values.median(), 3),
+            "Mean ΔMOS"                   : round(delta_values.mean(), 3)   if len(delta_values) > 0 else None,
+            "Top Failure Mode"            : most_common_failure,
         })
 
     summary_df = pd.DataFrame(summary_rows)
@@ -390,42 +429,39 @@ def run_gate(model_state=None):
             return -1
         return int(rate_str.split("/")[0])
 
-    summary_df["_clean_pass_num"]    = summary_df["Clean Pass Rate"].apply(parse_rate)
+    summary_df["_clean_pass_num"]    = summary_df["Clean Pass Rate (PASS only)"].apply(parse_rate)
+    summary_df["_nm"]                = summary_df["Near Miss"]
     summary_df["_degraded_pass_num"] = summary_df["Degraded Pass Rate"].apply(parse_rate)
     summary_df["_mean_delta_mos"]    = summary_df["Mean ΔMOS"].fillna(-999)
 
     summary_df = summary_df.sort_values(
-        # Priority: clean pass rate → degraded pass rate → mean delta MOS → median MOS
-        by=["_clean_pass_num", "_degraded_pass_num", "_mean_delta_mos", "Median MOS"],
-        ascending=[False, False, False, False]
-    ).drop(columns=["_clean_pass_num", "_degraded_pass_num", "_mean_delta_mos"])
+        by=["_clean_pass_num", "_nm", "_degraded_pass_num", "_mean_delta_mos", "Median MOS"],
+        ascending=[False, True, False, False, False]
+    ).drop(columns=["_clean_pass_num", "_nm", "_degraded_pass_num", "_mean_delta_mos"])
 
     return df, summary_df
 
 
 # ── Print results ──────────────────────────────────────────────────────────────
 def print_results(df, summary_df):
-    display_cols = [
-        "Model", "Sample",
-        "MOS", "Noisiness", "Discontinuity", "Coloration", "Loudness",
-        "ΔMOS", "ΔNoisiness", "ΔDiscontinuity", "ΔColoration", "ΔLoudness",
-        "Absolute", "Final", "Primary Failure", "Flag"
-    ]
+    display_cols = [c for c in df.columns if not c.startswith("_")]
     print("\n========== FULL PER-SEGMENT RESULTS ==========")
     print(df[display_cols].to_string(index=False))
 
     print("\n========== MODEL COMPARISON SUMMARY ==========")
     print(summary_df[[
-        "Model", "Clean Pass Rate", "Clean Review Rate", "Clean Fail Rate",
-        "Degraded Pass Rate", "Median MOS", "Mean ΔMOS", "Top Failure Mode"
+        "Model", "Clean Pass Rate (PASS only)", "Near Miss", "Review (clean)", "Clean Fail Rate",
+        "Degraded Segments", "Degraded Pass Rate",
+        "Median MOS", "Mean ΔMOS", "Top Failure Mode"
     ]].to_string(index=False))
 
     print("\n========== WHAT TO LOOK FOR ==========")
     print("Clean Pass Rate    → primary ranking — trustworthy ground truth comparison")
-    print("REVIEW segments    → absolute fail but delta small — listen before deciding")
-    print("Top Failure Mode   → which artifact type this model produces most")
-    print("Flag REF_QUALITY   → reference below NISQA_REF_THRESHOLDS — delta skipped, counts as degraded")
-    print("Flag NO_REF        → no reference file — absolute threshold only, counts as degraded")
+    print("Near Miss          → absolute barely fails (within 20% of threshold) — borderline, listen first")
+    print("Review (clean)     → absolute fails but delta passes — TTS no worse than reference, needs listen")
+    print("Top Failure Mode   → which NISQA dimension this model fails most")
+    print("Ref Flag REF_QUALITY → ref below NISQA_REF_THRESHOLDS — delta skipped, counts as degraded")
+    print("Ref Flag NO_REF    → no reference file — absolute threshold only")
 
 
 # ── Save results ───────────────────────────────────────────────────────────────
