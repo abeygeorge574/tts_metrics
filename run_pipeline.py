@@ -253,7 +253,7 @@ def run_utmos_gate(gate_key, gate_script, output_dir, extra_args=None):
     return True
 
 
-def run_base_gate(gate_key, gate_module_name, output_dir, models_dir=None, ref_dir=None):
+def run_base_gate(gate_key, gate_module_name, output_dir, models_dir=None, ref_dir=None, refs_dir=None):
     """Import and run a gate directly in this process (base env)."""
     import importlib.util
 
@@ -281,6 +281,8 @@ def run_base_gate(gate_key, gate_module_name, output_dir, models_dir=None, ref_d
             model_state["models_dir"] = models_dir
         if ref_dir:
             model_state["ref_dir"] = ref_dir
+        if refs_dir:
+            model_state["refs_dir"] = refs_dir
         df, summary_df = module.run_gate(model_state)
         module.print_results(df, summary_df)
         module.save_results(df, summary_df, gate_output_dir)
@@ -324,10 +326,16 @@ def main():
         default=None,
         help="Override REFERENCE_DIR from config (path to folder with reference .wav files).",
     )
+    parser.add_argument(
+        "--refs-dir",
+        default=None,
+        help="Override TEXT_REFERENCE_DIR from config (WER gate: folder with .txt transcripts).",
+    )
     args = parser.parse_args()
 
     models_dir = os.path.abspath(args.models_dir) if args.models_dir else None
     ref_dir    = os.path.abspath(args.ref_dir)    if args.ref_dir    else None
+    refs_dir   = os.path.abspath(args.refs_dir)   if args.refs_dir   else None
 
     gates_to_run = args.gates if args.gates else GATE_KEYS
     gates_to_run = [g for g in gates_to_run if g not in (args.skip or [])]
@@ -339,6 +347,8 @@ def main():
         log.info("Models dir: %s", models_dir)
     if ref_dir:
         log.info("Ref dir   : %s", ref_dir)
+    if refs_dir:
+        log.info("Refs dir  : %s (WER text transcripts)", refs_dir)
     os.makedirs(args.output_dir, exist_ok=True)
 
     # Build extra CLI args for utmos subprocess gates
@@ -347,6 +357,8 @@ def main():
         extra_args += ["--models-dir", models_dir]
     if ref_dir:
         extra_args += ["--ref-dir", ref_dir]
+    if refs_dir:
+        extra_args += ["--refs-dir", refs_dir]
 
     results_summary = {}
 
@@ -360,7 +372,7 @@ def main():
             success = run_utmos_gate(gate_key, gate_script, args.output_dir, extra_args=extra_args)
         else:
             success = run_base_gate(gate_key, gate_module, args.output_dir,
-                                    models_dir=models_dir, ref_dir=ref_dir)
+                                    models_dir=models_dir, ref_dir=ref_dir, refs_dir=refs_dir)
 
         results_summary[gate_key] = "PASS" if success else "FAIL"
 
