@@ -310,7 +310,11 @@ def run_gate(model_state=None):
                 log.error("  Output scoring failed: %s", e)
                 out_ar = out_dom = out_val = None
 
-            # Pass / fail
+            # Pass / fail — arousal only.
+            # Valence is recorded for reference but excluded from pass/fail:
+            # cross-lingual comparison (Hindi ref → English TTS) produces a
+            # systematic ~0.25 valence gap because the emotion model was trained
+            # on English speech, so Hindi prosody always reads as lower-valence.
             if ref_ar is None or out_ar is None:
                 passed    = "ERROR"
                 delta_ar  = None
@@ -318,7 +322,7 @@ def run_gate(model_state=None):
             else:
                 delta_ar  = round(abs(ref_ar  - out_ar),  4)
                 delta_val = round(abs(ref_val - out_val), 4)
-                passed    = "PASS" if (delta_ar <= AR_THRESH and delta_val <= VAL_THRESH) else "FAIL"
+                passed    = "PASS" if delta_ar <= AR_THRESH else "FAIL"
 
             log.info(
                 "  Arousal : ref=%.4f  out=%.4f  Δ=%s",
@@ -397,9 +401,10 @@ def print_results(df, summary_df):
 
     print("\n========== WHAT TO LOOK FOR ==========")
     print("Delta_Arousal → energy/intensity gap  (high = TTS sounds flat vs expressive reference)")
-    print("Delta_Valence → tone polarity gap      (high = TTS sounds wrong positive/negative feel)")
-    print(f"\nThresholds: Arousal Δ ≤ {config.AROUSAL_DELTA_THRESHOLD},  Valence Δ ≤ {config.VALENCE_DELTA_THRESHOLD}")
-    print("Both must pass. Either exceeding threshold → FAIL.")
+    print("Delta_Valence → tone polarity gap      (informational only — not used in pass/fail)")
+    print(f"\nPass threshold: Arousal Δ ≤ {config.AROUSAL_DELTA_THRESHOLD}  (valence excluded — cross-lingual bias)")
+    print("Valence is excluded from pass/fail because Hindi reference audio reads as lower-valence")
+    print("to an English-trained model, creating a systematic ~0.25 gap regardless of TTS quality.")
 
 
 # ── Save results ───────────────────────────────────────────────────────────────

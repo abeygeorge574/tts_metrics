@@ -66,9 +66,10 @@ def compute_pitch(audio_path):
         # Mean captures genuine sustained pitch elevation that median would centre away.
         pitch_mean   = round(float(np.mean(voiced_f0)), 2)
         pitch_std    = round(float(np.std(voiced_f0)), 2)
+        pitch_range  = round(float(np.max(voiced_f0) - np.min(voiced_f0)), 2)
         voiced_ratio = round(len(voiced_f0) / total_frames, 3)
 
-        return pitch_mean, pitch_std, voiced_ratio
+        return pitch_mean, pitch_std, pitch_range, voiced_ratio
 
     except Exception as e:
         print(f"  Pitch error: {e}")
@@ -149,14 +150,16 @@ def run_gate(model_state=None):
             else:
                 print(f"\n  Sample : {sample_name}")
 
-            tts_mean, tts_std, tts_voiced_ratio = compute_pitch(tts_path)
-            print(f"  TTS    : mean={tts_mean}Hz | std={tts_std}Hz | voiced={tts_voiced_ratio}")
+            tts_mean, tts_std, tts_range, tts_voiced_ratio = compute_pitch(tts_path)
+            print(f"  TTS    : mean={tts_mean}Hz | std={tts_std}Hz | range={tts_range}Hz | voiced={tts_voiced_ratio}")
 
             ref_mean         = None
             ref_std          = None
+            ref_range        = None
             ref_voiced_ratio = None
             mean_delta       = None
             std_ratio        = None
+            range_ratio      = None
             mean_pass        = None
             std_ratio_pass   = None
             ref_flag         = "NO_REF"
@@ -165,8 +168,8 @@ def run_gate(model_state=None):
             if reference_available:
                 ref_path = os.path.join(REFERENCE_DIR, wav_file)
                 if os.path.exists(ref_path):
-                    ref_mean, ref_std, ref_voiced_ratio = compute_pitch(ref_path)
-                    print(f"  Ref    : mean={ref_mean}Hz | std={ref_std}Hz | voiced={ref_voiced_ratio}")
+                    ref_mean, ref_std, ref_range, ref_voiced_ratio = compute_pitch(ref_path)
+                    print(f"  Ref    : mean={ref_mean}Hz | std={ref_std}Hz | range={ref_range}Hz | voiced={ref_voiced_ratio}")
 
                     if ref_voiced_ratio is not None and ref_voiced_ratio < 0.2:
                         ref_flag    = "REF_UNVOICED"
@@ -182,6 +185,9 @@ def run_gate(model_state=None):
                         if ref_std is not None and tts_std is not None and ref_std > 0:
                             std_ratio      = round(tts_std / ref_std, 3)
                             std_ratio_pass = std_ratio >= PITCH_STD_RATIO_THRESHOLD
+
+                        if ref_range is not None and tts_range is not None and ref_range > 0:
+                            range_ratio = round(tts_range / ref_range, 3)
 
             # absolute std floor — always runs, no reference needed
             if tts_std is not None:
@@ -210,12 +216,15 @@ def run_gate(model_state=None):
                 "Sample"        : sample_name,
                 "TTS Mean"      : tts_mean,
                 "TTS Std"       : tts_std,
+                "TTS Range"     : tts_range,
                 "TTS Voiced"    : tts_voiced_ratio,
                 "Ref Mean"      : ref_mean,
                 "Ref Std"       : ref_std,
+                "Ref Range"     : ref_range,
                 "Ref Voiced"    : ref_voiced_ratio,
                 "Mean Delta"    : mean_delta,
                 "Std Ratio"     : std_ratio,
+                "Range Ratio"   : range_ratio,
                 "Std Abs Pass"  : "PASS" if std_abs_pass else "FAIL" if std_abs_pass is not None else "—",
                 "Std Ratio Pass": "PASS" if std_ratio_pass else "FAIL" if std_ratio_pass is not None else "—",
                 "Mean Pass"     : "PASS" if mean_pass else "FAIL" if mean_pass is not None else "—",
@@ -248,9 +257,14 @@ def run_gate(model_state=None):
 
         deltas = model_df["Mean Delta"].dropna()
         med_tts_std   = round(model_df["TTS Std"].dropna().median(), 2)
+        med_tts_range = round(model_df["TTS Range"].dropna().median(), 2) if "TTS Range" in model_df else None
         med_std_ratio = (
             round(model_df["Std Ratio"].dropna().median(), 3)
             if model_df["Std Ratio"].notna().any() else None
+        )
+        med_range_ratio = (
+            round(model_df["Range Ratio"].dropna().median(), 3)
+            if "Range Ratio" in model_df and model_df["Range Ratio"].notna().any() else None
         )
         med_delta = round(deltas.median(), 2) if len(deltas) > 0 else None
         max_delta = round(deltas.max(), 2)    if len(deltas) > 0 else None
@@ -266,7 +280,9 @@ def run_gate(model_state=None):
             "Flat Ratio Fails"  : flat_ratio_count,
             "Register Fails"    : register_count,
             "Median TTS Std"    : med_tts_std,
+            "Median TTS Range"  : med_tts_range,
             "Median Std Ratio"  : med_std_ratio,
+            "Median Range Ratio": med_range_ratio,
             "Median Δ (mean/seg)": med_delta,
             "Max Δ"             : max_delta,
         })
@@ -296,9 +312,9 @@ def print_results(df, summary_df):
     print("\n========== FULL PER-SEGMENT RESULTS ==========")
     print(df[[
         "Model", "Sample",
-        "TTS Mean", "TTS Std", "TTS Voiced",
-        "Ref Mean", "Ref Std", "Ref Voiced",
-        "Mean Delta", "Std Ratio",
+        "TTS Mean", "TTS Std", "TTS Range", "TTS Voiced",
+        "Ref Mean", "Ref Std", "Ref Range", "Ref Voiced",
+        "Mean Delta", "Std Ratio", "Range Ratio",
         "Std Abs Pass", "Std Ratio Pass", "Mean Pass",
         "Final Pass", "Ref Flag"
     ]].to_string(index=False))
@@ -307,7 +323,9 @@ def print_results(df, summary_df):
     print(summary_df[[
         "Model", "Clean Pass Rate", "Degraded Pass Rate",
         "Flat Abs Fails", "Flat Ratio Fails", "Register Fails",
-        "Median TTS Std", "Median Std Ratio", "Median Δ (mean/seg)", "Max Δ"
+        "Median TTS Std", "Median TTS Range",
+        "Median Std Ratio", "Median Range Ratio",
+        "Median Δ (mean/seg)", "Max Δ"
     ]].to_string(index=False))
 
     print("\n========== WHAT TO LOOK FOR ==========")
@@ -315,6 +333,8 @@ def print_results(df, summary_df):
     print("Flat Abs Fails       → TTS std below floor — robotic regardless of reference")
     print("Flat Ratio Fails     → TTS flat relative to reference (std ratio < 0.5×)")
     print("Register Fails       → TTS pitch zone wrong vs reference (mean delta > 30 Hz)")
+    print("Median TTS Range     → F0 max−min across voiced frames: higher = more expressive pitch")
+    print("Median Range Ratio   → TTS range / ref range: < 1 = TTS narrower pitch excursion than ref")
     print("Median Δ (mean/seg)  → median across segments of per-segment mean F0 delta")
     print("Max Δ                → worst-case segment delta")
     print(f"\nEstimator: PRAAT (parselmouth). Mean F0 per segment, median across segments.")
