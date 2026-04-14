@@ -179,7 +179,7 @@ def run_gate(model_state=None):
     else:
         print(f"No enrollment file — segments without utterance ref will be skipped.")
 
-    reference_available = os.path.exists(REFERENCE_DIR)
+    reference_available = REFERENCE_DIR is not None and os.path.exists(REFERENCE_DIR)
     if reference_available:
         ref_files = sorted([f for f in os.listdir(REFERENCE_DIR) if f.endswith(".wav")])
         print(f"Reference folder found: {len(ref_files)} utterance files")

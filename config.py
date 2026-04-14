@@ -125,11 +125,11 @@ ARTIFACT_COMBINED_THRESHOLD = 0.15   # combined score above this → ERR_SPECTRA
 SPEAKER_SIM_WEIGHTS = os.path.join(ROOT, "weights", "speaker_sim")
 
 # ── Speaker similarity thresholds ─────────────────────────────────────────────
-# Calibrated from f5tts (voice cloning) vs generic TTS:
-#   f5tts (cloned from speaker.wav): 0.56–0.78 (median 0.62)
-#   generic TTS (not cloning):       -0.13–0.19 (all models)
-# 0.55 sits well above generic TTS ceiling (0.19) with 0.36 gap to spare.
-SPEAKER_SIM_THRESHOLD = 0.55
+# Calibrated from episode cloning (chatterbox_cloned vs Hindi references):
+#   cloning models: 0.53–0.78 (median 0.66)
+#   generic TTS:   -0.13–0.24 (all fail)
+# 0.50 captures borderline clones while staying well above generic TTS ceiling (0.24).
+SPEAKER_SIM_THRESHOLD = 0.50
 
 # ── SER thresholds ─────────────────────────────────────────────────────────────
 SER_CONFIDENCE_THRESHOLD = 0.5

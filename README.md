@@ -179,11 +179,35 @@ python download_weights.py   # without --skip-chatterbox
 # Generate 5 test sentences in target speaker's voice (uses data/enrollment/speaker.wav)
 python generate_chatterbox.py
 
-# Generate episode-length cloned audio (uses each Hindi reference segment as voice prompt)
-python generate_episode_cloned.py
+# Generate episode-length cloned audio from per-segment references
+python generate_episode_cloned.py     # Chatterbox — uses each reference as voice prompt
+python generate_episode_f5tts.py      # F5TTS — same, different model
 ```
 
-Generated files go to `data/models/chatterbox/` and `data/hindi_eval/models/chatterbox_cloned/` respectively.
+Generated files go to:
+- `data/models/chatterbox/` — 5-sentence generic test
+- `data/hindi_eval/models/chatterbox_cloned/` — episode with Chatterbox
+- `data/hindi_eval/models/f5tts_cloned/` — episode with F5TTS
+
+**F5TTS note:** provide `ref_text` (even a placeholder) to avoid Whisper download on first run.
+
+### Running gates on episode/custom data
+
+Every gate accepts CLI overrides for data paths:
+
+```bash
+python gates/gate_speaker_sim.py \
+  --models-dir  data/hindi_eval/models \
+  --ref-dir     data/hindi_eval/reference \
+  --output-dir  output/episode_speaker_sim
+
+python gates/gate_pitch.py \
+  --models-dir  data/hindi_eval/models \
+  --ref-dir     data/hindi_eval/reference \
+  --output-dir  output/episode_pitch
+```
+
+`--ref-dir` is optional. If omitted, speaker_sim falls back to `--enrollment-file`; pitch runs in absolute-threshold-only mode.
 
 ---
 
@@ -245,7 +269,7 @@ All neural gates auto-detect: CUDA → MPS (Apple Silicon) → CPU.
 | `NISQA_THRESHOLDS["MOS"]` | 3.75 | NISQA |
 | `NISQA_DELTA_THRESHOLDS["MOS"]` | −0.5 | NISQA |
 | `UTMOS_THRESHOLD` | 3.0 | UTMOS |
-| `SPEAKER_SIM_THRESHOLD` | 0.55 | Speaker Sim |
+| `SPEAKER_SIM_THRESHOLD` | 0.50 | Speaker Sim |
 | `SER_NEAR_MISS_MARGIN` | 0.10 | SER |
 | `AROUSAL_DELTA_THRESHOLD` | 0.15 | Arousal/Valence |
 | `VALENCE_DELTA_THRESHOLD` | 0.15 | Arousal/Valence |

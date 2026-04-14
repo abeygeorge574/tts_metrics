@@ -12,6 +12,12 @@ import os
 import sys
 import argparse
 
+# librosa uses numba for pyin; set a writable cache dir before import to avoid
+# "cannot cache function '__o_fold'" errors in sandbox / read-only installs.
+if not os.environ.get("NUMBA_CACHE_DIR"):
+    os.environ["NUMBA_CACHE_DIR"] = "/tmp/claude/numba"
+os.makedirs(os.environ["NUMBA_CACHE_DIR"], exist_ok=True)
+
 import numpy as np
 import librosa
 import pandas as pd
@@ -236,15 +242,14 @@ def run_gate(model_state=None):
         flat_ratio_count = model_df["Final Pass"].str.contains("Flat \\(vs ref\\)").sum()
         register_count   = model_df["Final Pass"].str.contains("Register").sum()
 
-        mean_tts_std   = round(model_df["TTS Std"].dropna().mean(), 2)
-        mean_std_ratio = (
-            round(model_df["Std Ratio"].dropna().mean(), 3)
+        deltas = model_df["Median Delta"].dropna()
+        med_tts_std   = round(model_df["TTS Std"].dropna().median(), 2)
+        med_std_ratio = (
+            round(model_df["Std Ratio"].dropna().median(), 3)
             if model_df["Std Ratio"].notna().any() else None
         )
-        mean_delta = (
-            round(model_df["Median Delta"].dropna().mean(), 2)
-            if model_df["Median Delta"].notna().any() else None
-        )
+        med_delta = round(deltas.median(), 2) if len(deltas) > 0 else None
+        max_delta = round(deltas.max(), 2)    if len(deltas) > 0 else None
 
         summary_rows.append({
             "Model"             : model,
@@ -256,9 +261,10 @@ def run_gate(model_state=None):
             "Flat Abs Fails"    : flat_abs_count,
             "Flat Ratio Fails"  : flat_ratio_count,
             "Register Fails"    : register_count,
-            "Mean TTS Std"      : mean_tts_std,
-            "Mean Std Ratio"    : mean_std_ratio,
-            "Mean Median Delta" : mean_delta,
+            "Median TTS Std"    : med_tts_std,
+            "Median Std Ratio"  : med_std_ratio,
+            "Median Δ"          : med_delta,
+            "Max Δ"             : max_delta,
         })
 
     summary_df = pd.DataFrame(summary_rows)
@@ -270,12 +276,13 @@ def run_gate(model_state=None):
 
     summary_df["_clean_pass_num"]    = summary_df["Clean Pass Rate"].apply(parse_rate)
     summary_df["_degraded_pass_num"] = summary_df["Degraded Pass Rate"].apply(parse_rate)
-    summary_df["_mean_std_ratio"]    = summary_df["Mean Std Ratio"].fillna(-999)
+    summary_df["_med_std_ratio"]     = summary_df["Median Std Ratio"].fillna(-999)
+    summary_df["_med_delta"]         = summary_df["Median Δ"].fillna(9999)
 
     summary_df = summary_df.sort_values(
-        by=["_clean_pass_num", "_degraded_pass_num", "_mean_std_ratio"],
-        ascending=[False, False, False]
-    ).drop(columns=["_clean_pass_num", "_degraded_pass_num", "_mean_std_ratio"])
+        by=["_clean_pass_num", "_degraded_pass_num", "_med_std_ratio", "_med_delta"],
+        ascending=[False, False, False, True]
+    ).drop(columns=["_clean_pass_num", "_degraded_pass_num", "_med_std_ratio", "_med_delta"])
 
     return df, summary_df
 
@@ -296,13 +303,15 @@ def print_results(df, summary_df):
     print(summary_df[[
         "Model", "Clean Pass Rate", "Degraded Pass Rate",
         "Flat Abs Fails", "Flat Ratio Fails", "Register Fails",
-        "Mean TTS Std", "Mean Std Ratio", "Mean Median Delta"
+        "Median TTS Std", "Median Std Ratio", "Median Δ", "Max Δ"
     ]].to_string(index=False))
 
     print("\n========== WHAT TO LOOK FOR ==========")
     print("Clean Pass Rate   → primary ranking — ref voiced ratio >= 0.2 only")
     print("Flat Abs Fails    → TTS std below floor — robotic regardless of reference")
-    print("Register Fails    → TTS pitch zone wrong — fix voice clone")
+    print("Flat Ratio Fails  → TTS flat relative to reference (std ratio < 0.5×)")
+    print("Register Fails    → TTS pitch zone wrong vs reference (median delta > 30 Hz)")
+    print("Median Δ / Max Δ  → typical and worst-case pitch zone error across segments")
     print(f"\nThresholds: Median Δ <= {config.PITCH_MEDIAN_THRESHOLD}Hz | "
           f"Std abs >= {config.PITCH_STD_ABS_THRESHOLD}Hz | "
           f"Std ratio >= {config.PITCH_STD_RATIO_THRESHOLD}x ref")
