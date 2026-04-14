@@ -20,6 +20,9 @@ import sys
 import argparse
 import tempfile
 
+for _pv in ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+    os.environ.pop(_pv, None)
+
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -172,8 +175,8 @@ def run_gate(model_state=None):
 
     ser_model = model_state["ser_model"]
 
-    MODELS_DIR    = config.MODELS_DIR
-    REFERENCE_DIR = config.REFERENCE_DIR
+    MODELS_DIR    = model_state.get("models_dir") or config.MODELS_DIR
+    REFERENCE_DIR = model_state.get("ref_dir")    or config.REFERENCE_DIR
 
     CONFIDENCE_THRESHOLD = config.SER_CONFIDENCE_THRESHOLD
     NEAR_MISS_MARGIN     = config.SER_NEAR_MISS_MARGIN
@@ -435,10 +438,17 @@ def save_results(df, summary_df, output_dir):
 # ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="SER gate")
-    parser.add_argument("--output-dir", default=os.path.join(config.OUTPUT_DIR, "ser"))
+    parser.add_argument("--output-dir",  default=os.path.join(config.OUTPUT_DIR, "ser"))
+    parser.add_argument("--models-dir",  default=None, help="Override config.MODELS_DIR")
+    parser.add_argument("--ref-dir",     default=None, help="Override config.REFERENCE_DIR")
     args = parser.parse_args()
 
-    model_state    = load_model()
+    model_state = load_model()
+    if args.models_dir:
+        model_state["models_dir"] = os.path.abspath(args.models_dir)
+    if args.ref_dir:
+        model_state["ref_dir"] = os.path.abspath(args.ref_dir)
+
     df, summary_df = run_gate(model_state)
     print_results(df, summary_df)
     save_results(df, summary_df, args.output_dir)

@@ -27,6 +27,9 @@ import sys
 import argparse
 import logging
 
+for _pv in ("ALL_PROXY", "all_proxy", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY", "http_proxy"):
+    os.environ.pop(_pv, None)
+
 import json
 import torch
 import torch.nn as nn
@@ -232,8 +235,8 @@ def run_gate(model_state=None):
     model     = model_state["model"]
     device    = model_state.get("device", "cpu")
 
-    MODELS_DIR = config.MODELS_DIR
-    REF_DIR    = config.REFERENCE_DIR
+    MODELS_DIR = model_state.get("models_dir") or config.MODELS_DIR
+    REF_DIR    = model_state.get("ref_dir")    or config.REFERENCE_DIR
 
     AR_THRESH  = config.AROUSAL_DELTA_THRESHOLD
     VAL_THRESH = config.VALENCE_DELTA_THRESHOLD
@@ -416,13 +419,17 @@ if __name__ == "__main__":
     )
 
     parser = argparse.ArgumentParser(description="Arousal/Valence dimensional emotion gate")
-    parser.add_argument(
-        "--output-dir",
-        default=os.path.join(config.OUTPUT_DIR, "arousal_valence"),
-    )
+    parser.add_argument("--output-dir", default=os.path.join(config.OUTPUT_DIR, "arousal_valence"))
+    parser.add_argument("--models-dir", default=None, help="Override config.MODELS_DIR")
+    parser.add_argument("--ref-dir",    default=None, help="Override config.REFERENCE_DIR")
     args = parser.parse_args()
 
-    model_state    = load_model()
+    model_state = load_model()
+    if args.models_dir:
+        model_state["models_dir"] = os.path.abspath(args.models_dir)
+    if args.ref_dir:
+        model_state["ref_dir"] = os.path.abspath(args.ref_dir)
+
     df, summary_df = run_gate(model_state)
     print_results(df, summary_df)
     save_results(df, summary_df, args.output_dir)
