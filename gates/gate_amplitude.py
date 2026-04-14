@@ -32,9 +32,10 @@ def load_model():
 
 
 # ── Audio analysis ─────────────────────────────────────────────────────────────
-def analyze_audio(file_path):
+def analyze_audio(file_path, clip_limit_db=-1.0):
     """
-    Returns (LUFS, LRA, spectral_centroid, true_peak_dBFS).
+    Returns (LUFS, LRA, spectral_centroid, true_peak_dBFS, clip_rate).
+    clip_rate = fraction of samples at or above clip_limit_db.
     librosa loads as (channels, samples) — must transpose to
     (samples, channels) for pyloudnorm.
     """
@@ -52,16 +53,19 @@ def analyze_audio(file_path):
     mono     = data if data.ndim == 1 else librosa.to_mono(data)
     centroid = float(np.mean(librosa.feature.spectral_centroid(y=mono, sr=sr)))
 
-    peak_amp = float(np.max(np.abs(data_pln)))
-    peak_db  = 20 * np.log10(peak_amp) if peak_amp > 0 else -100.0
+    peak_amp  = float(np.max(np.abs(data_pln)))
+    peak_db   = 20 * np.log10(peak_amp) if peak_amp > 0 else -100.0
 
-    return round(lufs, 3), round(lra, 3), round(centroid, 2), round(peak_db, 3)
+    clip_amp  = 10 ** (clip_limit_db / 20)
+    clip_rate = float(np.mean(np.abs(data_pln) >= clip_amp))
+
+    return round(lufs, 3), round(lra, 3), round(centroid, 2), round(peak_db, 3), round(clip_rate, 6)
 
 
 # ── Main gate ──────────────────────────────────────────────────────────────────
 def run_gate(model_state=None):
-    MODELS_DIR    = config.MODELS_DIR
-    REFERENCE_DIR = config.REFERENCE_DIR
+    MODELS_DIR    = (model_state or {}).get("models_dir") or config.MODELS_DIR
+    REFERENCE_DIR = (model_state or {}).get("ref_dir")    or config.REFERENCE_DIR
 
     LUFS_TOLERANCE     = config.LUFS_TOLERANCE
     LRA_TOLERANCE      = config.LRA_TOLERANCE
@@ -69,6 +73,12 @@ def run_gate(model_state=None):
     PEAK_LIMIT         = config.PEAK_LIMIT
     REF_LUFS_MIN       = config.REF_LUFS_MIN
     REF_LUFS_MAX       = config.REF_LUFS_MAX
+    NEAR_MISS_MARGIN   = config.AMPLITUDE_NEAR_MISS_MARGIN
+    CLIP_RATE_WARN     = config.CLIP_RATE_WARN
+    TTS_LUFS_ABS_MIN   = config.TTS_LUFS_ABS_MIN
+    TTS_LUFS_ABS_MAX   = config.TTS_LUFS_ABS_MAX
+    TTS_LRA_ABS_MIN    = config.TTS_LRA_ABS_MIN
+    TTS_LRA_ABS_MAX    = config.TTS_LRA_ABS_MAX
 
     for folder in [REFERENCE_DIR, MODELS_DIR]:
         if not os.path.exists(folder):
@@ -104,11 +114,11 @@ def run_gate(model_state=None):
     print("All models have identical filenames.")
 
     sample_names = model_samples[model_folders[0]]
-    for wav_file in sample_names:
-        ref_path = os.path.join(REFERENCE_DIR, wav_file)
-        if not os.path.exists(ref_path):
-            raise FileNotFoundError(f"Missing reference for {wav_file} — expected: {ref_path}")
-    print("All reference files found.")
+    missing_refs = [f for f in sample_names if not os.path.exists(os.path.join(REFERENCE_DIR, f))]
+    if missing_refs:
+        print(f"  Warning: {len(missing_refs)} samples have no reference — will skip delta checks: {missing_refs}")
+    else:
+        print("All reference files found.")
 
     total = len(model_folders) * len(sample_names)
     print(f"\nReady: {len(model_folders)} models × {len(sample_names)} samples = {total} evaluations")
@@ -134,96 +144,131 @@ def run_gate(model_state=None):
                 print(f"\n  Sample : {sample_name}")
 
             try:
-                ref_lufs, ref_lra, ref_cent, ref_peak = analyze_audio(ref_path)
-                tts_lufs, tts_lra, tts_cent, tts_peak = analyze_audio(tts_path)
+                ref_lufs, ref_lra, ref_cent, ref_peak, ref_clip_rate = analyze_audio(ref_path, PEAK_LIMIT)
+                tts_lufs, tts_lra, tts_cent, tts_peak, tts_clip_rate = analyze_audio(tts_path, PEAK_LIMIT)
 
                 print(f"  Ref    : LUFS={ref_lufs} | LRA={ref_lra} | "
-                      f"Cent={ref_cent} | Peak={ref_peak}")
+                      f"Cent={ref_cent} | Peak={ref_peak} | ClipRate={ref_clip_rate}")
                 print(f"  TTS    : LUFS={tts_lufs} | LRA={tts_lra} | "
-                      f"Cent={tts_cent} | Peak={tts_peak}")
+                      f"Cent={tts_cent} | Peak={tts_peak} | ClipRate={tts_clip_rate}")
 
-                # SHORT_SEGMENT degrades LUFS and LRA reliability (EBU R128 needs
-                # minimum gating window; LRA needs duration to show variation)
-                ref_lufs_degraded = not (REF_LUFS_MIN <= ref_lufs <= REF_LUFS_MAX)
-                is_degraded       = ref_lufs_degraded or is_short
-                ref_flag          = (
-                    "SHORT_SEGMENT"     if is_short          else
-                    "REF_LUFS_DEGRADED" if ref_lufs_degraded else "—"
-                )
+                # ── Clipping classification ────────────────────────────────────
+                ref_clipping     = ref_clip_rate >= CLIP_RATE_WARN
+                tts_hard_clip    = tts_clip_rate >= CLIP_RATE_WARN
+                tts_near_clip    = 0 < tts_clip_rate < CLIP_RATE_WARN
 
-                tts_clipping = tts_peak >= PEAK_LIMIT
-                ref_clipping = ref_peak >= PEAK_LIMIT
-
-                if tts_clipping and ref_clipping:
+                if tts_hard_clip and ref_clipping:
                     peak_flag = "REF_ALSO_CLIPPED"
-                elif tts_clipping:
-                    peak_flag = "TTS_CLIPPING"
+                elif tts_hard_clip:
+                    peak_flag = "CLIPPING"
+                elif tts_near_clip:
+                    peak_flag = "NEAR_CLIP"
                 elif ref_clipping:
                     peak_flag = "REF_CLIPPED"
                 else:
                     peak_flag = "—"
 
+                # ── Degraded: ref quality makes delta comparison unreliable ───
+                ref_lufs_degraded = not (REF_LUFS_MIN <= ref_lufs <= REF_LUFS_MAX)
+                is_degraded       = ref_lufs_degraded or is_short or ref_clipping
+                ref_flag          = (
+                    "SHORT_SEGMENT"     if is_short          else
+                    "REF_CLIPPED"       if ref_clipping      else
+                    "REF_LUFS_DEGRADED" if ref_lufs_degraded else "—"
+                )
+
                 lufs_diff = round(abs(ref_lufs - tts_lufs), 3)
                 lra_diff  = round(abs(ref_lra  - tts_lra),  3)
                 cent_diff = round(abs(ref_cent - tts_cent),  2)
 
-                failures = []
+                # ── Verdict ────────────────────────────────────────────────────
+                def _check(delta, tolerance):
+                    """PASS / NEAR_MISS / FAIL based on delta vs threshold + margin."""
+                    if delta <= tolerance:
+                        return "PASS"
+                    elif delta <= tolerance * (1 + NEAR_MISS_MARGIN):
+                        return "NEAR_MISS"
+                    return "FAIL"
 
-                if tts_clipping:
-                    failures.append("Clipping")
+                if tts_hard_clip:
+                    final_pass = "FAIL (Clipping)"
 
-                if not is_degraded:
-                    if lufs_diff > LUFS_TOLERANCE:
-                        failures.append("Volume")
-                    if lra_diff > LRA_TOLERANCE:
-                        failures.append("Dynamics")
-                    if cent_diff > CENTROID_TOLERANCE:
-                        failures.append("EQ")
+                elif is_degraded:
+                    # Delta checks skipped — run absolute sanity bounds on TTS only
+                    abs_fails = []
+                    if not (TTS_LUFS_ABS_MIN <= tts_lufs <= TTS_LUFS_ABS_MAX):
+                        abs_fails.append("Volume_Abs")
+                    if not (TTS_LRA_ABS_MIN <= tts_lra <= TTS_LRA_ABS_MAX):
+                        abs_fails.append("Dynamics_Abs")
+                    if abs_fails:
+                        final_pass = f"FAIL ({', '.join(abs_fails)})"
+                    else:
+                        # TTS is sane but ref was unreliable — flag for human review
+                        final_pass = "REVIEW"
 
-                final_pass = "PASS" if not failures else f"FAIL ({', '.join(failures)})"
+                else:
+                    lufs_v = _check(lufs_diff, LUFS_TOLERANCE)
+                    lra_v  = _check(lra_diff,  LRA_TOLERANCE)
+                    cent_v = _check(cent_diff, CENTROID_TOLERANCE)
+
+                    hard_fails  = [n for n, v in [("Volume", lufs_v), ("Dynamics", lra_v), ("EQ", cent_v)] if v == "FAIL"]
+                    near_misses = [n for n, v in [("Volume", lufs_v), ("Dynamics", lra_v), ("EQ", cent_v)] if v == "NEAR_MISS"]
+
+                    if hard_fails:
+                        final_pass = f"FAIL ({', '.join(hard_fails)})"
+                    elif near_misses:
+                        final_pass = f"NEAR_MISS ({', '.join(near_misses)})"
+                    else:
+                        final_pass = "PASS"
+
+                    # NEAR_CLIP warning appended to any non-FAIL verdict
+                    if tts_near_clip and not final_pass.startswith("FAIL"):
+                        final_pass += " +NEAR_CLIP"
 
                 print(f"  Result : {final_pass} | Degraded: {is_degraded} | Peak: {peak_flag}")
 
                 results.append({
-                    "Model"       : model,
-                    "Sample"      : sample_name,
-                    "Ref LUFS"    : ref_lufs,
-                    "TTS LUFS"    : tts_lufs,
-                    "LUFS Delta"  : lufs_diff,
-                    "Ref LRA"     : ref_lra,
-                    "TTS LRA"     : tts_lra,
-                    "LRA Delta"   : lra_diff,
-                    "Ref Cent"    : ref_cent,
-                    "TTS Cent"    : tts_cent,
-                    "Cent Delta"  : cent_diff,
-                    "Ref Peak"    : ref_peak,
-                    "TTS Peak"    : tts_peak,
-                    "Peak Flag"   : peak_flag,
-                    "Final Pass"  : final_pass,
-                    "Ref Flag"    : ref_flag,
-                    "_is_degraded": is_degraded,
+                    "Model"         : model,
+                    "Sample"        : sample_name,
+                    "Ref LUFS"      : ref_lufs,
+                    "TTS LUFS"      : tts_lufs,
+                    "LUFS Delta"    : lufs_diff,
+                    "Ref LRA"       : ref_lra,
+                    "TTS LRA"       : tts_lra,
+                    "LRA Delta"     : lra_diff,
+                    "Ref Cent"      : ref_cent,
+                    "TTS Cent"      : tts_cent,
+                    "Cent Delta"    : cent_diff,
+                    "Ref Peak"      : ref_peak,
+                    "TTS Peak"      : tts_peak,
+                    "TTS Clip Rate" : tts_clip_rate,
+                    "Peak Flag"     : peak_flag,
+                    "Final Pass"    : final_pass,
+                    "Ref Flag"      : ref_flag,
+                    "_is_degraded"  : is_degraded,
                 })
 
             except Exception as e:
                 print(f"  ERROR: {e}")
                 results.append({
-                    "Model"       : model,
-                    "Sample"      : sample_name,
-                    "Ref LUFS"    : None,
-                    "TTS LUFS"    : None,
-                    "LUFS Delta"  : None,
-                    "Ref LRA"     : None,
-                    "TTS LRA"     : None,
-                    "LRA Delta"   : None,
-                    "Ref Cent"    : None,
-                    "TTS Cent"    : None,
-                    "Cent Delta"  : None,
-                    "Ref Peak"    : None,
-                    "TTS Peak"    : None,
-                    "Peak Flag"   : "ERROR",
-                    "Final Pass"  : "ERROR",
-                    "Ref Flag"    : "ERROR",
-                    "_is_degraded": False,
+                    "Model"         : model,
+                    "Sample"        : sample_name,
+                    "Ref LUFS"      : None,
+                    "TTS LUFS"      : None,
+                    "LUFS Delta"    : None,
+                    "Ref LRA"       : None,
+                    "TTS LRA"       : None,
+                    "LRA Delta"     : None,
+                    "Ref Cent"      : None,
+                    "TTS Cent"      : None,
+                    "Cent Delta"    : None,
+                    "Ref Peak"      : None,
+                    "TTS Peak"      : None,
+                    "TTS Clip Rate" : None,
+                    "Peak Flag"     : "ERROR",
+                    "Final Pass"    : "ERROR",
+                    "Ref Flag"      : "ERROR",
+                    "_is_degraded"  : False,
                 })
 
     print("\n\nAll evaluations complete.")
@@ -238,16 +283,26 @@ def run_gate(model_state=None):
         total       = len(model_df)
 
         clean_total = len(clean_df)
-        clean_pass  = (clean_df["Final Pass"] == "PASS").sum()
+        # PASS +NEAR_CLIP is still a pass — only the warning suffix differs
+        clean_pass  = clean_df["Final Pass"].str.startswith("PASS").sum()
 
         deg_total   = len(degraded_df)
         deg_pass    = (degraded_df["Final Pass"] == "PASS").sum()
 
-        clipping_count = model_df["Final Pass"].str.contains("Clipping").sum()
-        volume_count   = model_df["Final Pass"].str.contains("Volume").sum()
-        dynamics_count = model_df["Final Pass"].str.contains("Dynamics").sum()
-        eq_count       = model_df["Final Pass"].str.contains("EQ").sum()
-        error_count    = (model_df["Final Pass"] == "ERROR").sum()
+        fp = model_df["Final Pass"]
+        clipping_count  = fp.str.contains("Clipping",     na=False).sum()
+        volume_count    = fp.str.contains("Volume",       na=False).sum()
+        dynamics_count  = fp.str.contains("Dynamics",     na=False).sum()
+        eq_count        = fp.str.contains("EQ",           na=False).sum()
+        near_miss_count = fp.str.startswith("NEAR_MISS",  na=False).sum()
+        review_count    = (fp == "REVIEW").sum()
+        near_clip_count = model_df["Peak Flag"].eq("NEAR_CLIP").sum()
+        error_count     = (fp == "ERROR").sum()
+
+        # Degraded pass rate: REVIEW counts as "pass" for degraded segments
+        deg_pass = (degraded_df["Final Pass"].isin(["REVIEW"]) |
+                    degraded_df["Final Pass"].str.startswith("NEAR_MISS", na=False) |
+                    (degraded_df["Final Pass"] == "PASS")).sum()
 
         summary_rows.append({
             "Model"             : model,
@@ -256,6 +311,9 @@ def run_gate(model_state=None):
             "Clean Pass Rate"   : f"{clean_pass}/{clean_total}"  if clean_total > 0 else "—",
             "Degraded Segments" : deg_total,
             "Degraded Pass Rate": f"{deg_pass}/{deg_total}"      if deg_total > 0 else "—",
+            "Near Miss"         : near_miss_count,
+            "Review"            : review_count,
+            "Near Clip"         : near_clip_count,
             "Clipping Fails"    : clipping_count,
             "Volume Fails"      : volume_count,
             "Dynamics Fails"    : dynamics_count,
@@ -274,8 +332,10 @@ def run_gate(model_state=None):
     summary_df["_degraded_pass_num"] = summary_df["Degraded Pass Rate"].apply(parse_rate)
 
     summary_df = summary_df.sort_values(
-        by=["_clean_pass_num", "_degraded_pass_num", "Clipping Fails"],
-        ascending=[False, False, True]
+        by=["_clean_pass_num", "_degraded_pass_num",
+            "Clipping Fails", "Volume Fails", "Dynamics Fails", "EQ Fails",
+            "Near Miss", "Near Clip", "Errors"],
+        ascending=[False, False, True, True, True, True, True, True, True]
     ).drop(columns=["_clean_pass_num", "_degraded_pass_num"])
 
     return df, summary_df
@@ -289,22 +349,26 @@ def print_results(df, summary_df):
         "Ref LUFS", "TTS LUFS", "LUFS Delta",
         "Ref LRA",  "TTS LRA",  "LRA Delta",
         "Ref Cent", "TTS Cent", "Cent Delta",
-        "Ref Peak", "TTS Peak", "Peak Flag",
+        "Ref Peak", "TTS Peak", "TTS Clip Rate", "Peak Flag",
         "Final Pass", "Ref Flag"
     ]].to_string(index=False))
 
     print("\n========== MODEL COMPARISON SUMMARY ==========")
     print(summary_df[[
         "Model", "Clean Pass Rate", "Degraded Pass Rate",
+        "Near Miss", "Review", "Near Clip",
         "Clipping Fails", "Volume Fails", "Dynamics Fails", "EQ Fails"
     ]].to_string(index=False))
 
     print("\n========== WHAT TO LOOK FOR ==========")
-    print("Clean Pass Rate → primary ranking — ref LUFS within -40 to -5 only")
-    print("Clipping Fails  → TTS peak >= -1.0 dBFS — always fails regardless of ref")
-    print("Volume Fails    → LUFS delta > 4.0")
-    print("Dynamics Fails  → LRA delta > 3.0")
-    print("EQ Fails        → centroid delta > 500Hz")
+    print("Clean Pass Rate → primary ranking (ref LUFS within -40 to -5, not short, not clipped)")
+    print("NEAR_MISS       → delta within 20% of threshold — marginal, not hard fail")
+    print("REVIEW          → ref was degraded, TTS passes absolute bounds — needs human check")
+    print("NEAR_CLIP       → <0.1% of samples exceed peak limit — warn only, not fail")
+    print("Clipping Fails  → >=0.1% of samples exceed peak limit — hard fail")
+    print("Volume Fails    → LUFS delta > threshold (hard fail)")
+    print("Dynamics Fails  → LRA delta > threshold (hard fail)")
+    print("EQ Fails        → centroid delta > threshold (hard fail)")
     print(f"\nThresholds: LUFS ±{config.LUFS_TOLERANCE} | LRA ±{config.LRA_TOLERANCE} | "
           f"Centroid ±{config.CENTROID_TOLERANCE}Hz | Peak < {config.PEAK_LIMIT}dBFS")
 
@@ -321,10 +385,18 @@ def save_results(df, summary_df, output_dir):
 # ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Amplitude gate")
-    parser.add_argument("--output-dir", default=os.path.join(config.OUTPUT_DIR, "amplitude"))
+    parser.add_argument("--output-dir",  default=os.path.join(config.OUTPUT_DIR, "amplitude"))
+    parser.add_argument("--models-dir",  default=None, help="Override config.MODELS_DIR")
+    parser.add_argument("--ref-dir",     default=None, help="Override config.REFERENCE_DIR")
     args = parser.parse_args()
 
+    model_state = {}
+    if args.models_dir:
+        model_state["models_dir"] = os.path.abspath(args.models_dir)
+    if args.ref_dir:
+        model_state["ref_dir"] = os.path.abspath(args.ref_dir)
+
     load_model()
-    df, summary_df = run_gate()
+    df, summary_df = run_gate(model_state or None)
     print_results(df, summary_df)
     save_results(df, summary_df, args.output_dir)

@@ -165,11 +165,25 @@ REF_PAUSES_PER_SECOND_LIMIT = 1.0   # pauses/sec above this = degraded
 
 # ── Amplitude thresholds ───────────────────────────────────────────────────────
 LUFS_TOLERANCE     = 6.5     # LUFS delta tolerance — raised 4→6.5: ±6dB passes, ±9dB fails
-LRA_TOLERANCE      = 3.0     # LUFS LRA delta tolerance
+LRA_TOLERANCE      = 3.0     # LRA delta tolerance
 CENTROID_TOLERANCE = 500     # Hz spectral centroid delta tolerance
-PEAK_LIMIT         = -1.0    # dBFS — TTS clipping threshold
+PEAK_LIMIT         = -1.0    # dBFS — clipping threshold (applied to both ref and TTS)
 REF_LUFS_MIN       = -40.0   # below this = degraded reference
 REF_LUFS_MAX       = -5.0    # above this = degraded reference
+
+# Near-miss margin: delta in (threshold, threshold × (1 + margin)] → NEAR_MISS not FAIL
+AMPLITUDE_NEAR_MISS_MARGIN = 0.20   # 20% beyond threshold
+
+# Clipping rate: fraction of samples at or above PEAK_LIMIT
+# 0 < rate < CLIP_RATE_WARN  → NEAR_CLIP (warn, not fail)
+# rate >= CLIP_RATE_WARN     → CLIPPING (hard fail)
+CLIP_RATE_WARN = 0.001   # 0.1% of samples — ~110 samples in a 5s/22kHz file
+
+# Absolute TTS bounds (used when ref is degraded — sanity checks not quality gates)
+TTS_LUFS_ABS_MIN = -40.0   # below this = near-silent TTS
+TTS_LUFS_ABS_MAX = -5.0    # above this = dangerously loud TTS
+TTS_LRA_ABS_MIN  = 0.5     # below this = completely flat/robotic delivery
+TTS_LRA_ABS_MAX  = 20.0    # above this = erratic dynamics
 
 # ── Arousal / Valence thresholds ──────────────────────────────────────────────
 AROUSAL_DELTA_THRESHOLD = 0.15   # max |ref_arousal - out_arousal| — above = emotion intensity lost

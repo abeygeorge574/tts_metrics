@@ -205,8 +205,8 @@ def compare_pauses(ref_pauses, tts_pauses):
 
 # ── Main gate ──────────────────────────────────────────────────────────────────
 def run_gate(model_state=None):
-    MODELS_DIR    = config.MODELS_DIR
-    REFERENCE_DIR = config.REFERENCE_DIR
+    MODELS_DIR    = (model_state or {}).get("models_dir") or config.MODELS_DIR
+    REFERENCE_DIR = (model_state or {}).get("ref_dir")    or config.REFERENCE_DIR
 
     REF_PAUSES_PER_SECOND_LIMIT = config.REF_PAUSES_PER_SECOND_LIMIT
 
@@ -244,11 +244,11 @@ def run_gate(model_state=None):
     print("All models have identical filenames.")
 
     sample_names = model_samples[model_folders[0]]
-    for wav_file in sample_names:
-        ref_path = os.path.join(REFERENCE_DIR, wav_file)
-        if not os.path.exists(ref_path):
-            raise FileNotFoundError(f"Missing reference for {wav_file} — expected: {ref_path}")
-    print("All reference files found.")
+    missing_refs = [f for f in sample_names if not os.path.exists(os.path.join(REFERENCE_DIR, f))]
+    if missing_refs:
+        print(f"  Warning: {len(missing_refs)} samples have no reference — will skip pause comparison: {missing_refs}")
+    else:
+        print("All reference files found.")
 
     total = len(model_folders) * len(sample_names)
     print(f"\nReady: {len(model_folders)} models × {len(sample_names)} samples = {total} evaluations")
@@ -266,6 +266,18 @@ def run_gate(model_state=None):
             ref_path    = os.path.join(REFERENCE_DIR, wav_file)
 
             print(f"\n  Sample : {sample_name}")
+
+            if not os.path.exists(ref_path):
+                print(f"  Skipping {sample_name} — no reference file")
+                results.append({
+                    "Model": model, "Sample": sample_name,
+                    "Ref Pauses": None, "TTS Pauses": None, "Matched": None,
+                    "Unmatched Ref": None, "Unmatched TTS": None, "Count Delta": None,
+                    "Med Pos Offset": None, "Med Dur Ratio": None,
+                    "Count Pass": "—", "Position Pass": "—", "Duration Pass": "—",
+                    "Final Pass": "NO_REF", "Ref Flag": "NO_REF", "_is_degraded": True,
+                })
+                continue
 
             try:
                 ref_pauses, ref_duration = get_pauses(ref_path)
@@ -440,10 +452,18 @@ def save_results(df, summary_df, output_dir):
 # ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="VAD / Pause alignment gate")
-    parser.add_argument("--output-dir", default=os.path.join(config.OUTPUT_DIR, "vad"))
+    parser.add_argument("--output-dir",  default=os.path.join(config.OUTPUT_DIR, "vad"))
+    parser.add_argument("--models-dir",  default=None, help="Override config.MODELS_DIR")
+    parser.add_argument("--ref-dir",     default=None, help="Override config.REFERENCE_DIR")
     args = parser.parse_args()
 
+    model_state = {}
+    if args.models_dir:
+        model_state["models_dir"] = os.path.abspath(args.models_dir)
+    if args.ref_dir:
+        model_state["ref_dir"] = os.path.abspath(args.ref_dir)
+
     load_model()
-    df, summary_df = run_gate()
+    df, summary_df = run_gate(model_state or None)
     print_results(df, summary_df)
     save_results(df, summary_df, args.output_dir)
