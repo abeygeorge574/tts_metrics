@@ -37,7 +37,7 @@ def load_model():
 # pyin does not need the native sample rate — pitch lives below 1 kHz so 16 kHz
 # is more than sufficient.  Loading at 16 kHz reduces computation ~3× for typical
 # 44.1/48 kHz broadcast files.  hop_length=1024 gives 64 ms resolution which is
-# more than enough for mean/std statistics.
+# more than enough for median/std statistics.
 _PITCH_SR       = 16000
 _PITCH_HOP      = 1024   # 64 ms at 16 kHz
 
@@ -60,19 +60,16 @@ def compute_pitch(audio_path):
             print(f"  No voiced frames: {os.path.basename(audio_path)}")
             return None, None, 0.0
 
-        # Octave-correction before mean: pyin occasionally estimates at 2× or 0.5×
-        # the true frequency. Frames deviating >1.8× or <0.55× the rough median are
-        # octave errors — fold them back before computing mean.
-        rough_median = np.median(voiced_f0)
-        corrected    = voiced_f0.copy()
-        corrected[corrected > 1.8 * rough_median] /= 2
-        corrected[corrected < 0.55 * rough_median] *= 2
-
-        pitch_mean   = round(float(np.mean(corrected)), 2)
-        pitch_std    = round(float(np.std(corrected)), 2)
+        # Median is used (not mean) because pyin has octave errors: individual frames
+        # can land at 2× or 0.5× the true frequency. These are estimation artifacts,
+        # not real pitch events. Median is robust to them; mean is not.
+        # If pitch genuinely shifts (register mismatch), the majority of frames
+        # reflect that shift — median correctly catches it.
+        pitch_median = round(float(np.median(voiced_f0)), 2)
+        pitch_std    = round(float(np.std(voiced_f0)), 2)
         voiced_ratio = round(float(np.sum(voiced_flag) / len(voiced_flag)), 3)
 
-        return pitch_mean, pitch_std, voiced_ratio
+        return pitch_median, pitch_std, voiced_ratio
 
     except Exception as e:
         print(f"  Pitch error: {e}")
@@ -153,15 +150,15 @@ def run_gate(model_state=None):
             else:
                 print(f"\n  Sample : {sample_name}")
 
-            tts_mean, tts_std, tts_voiced_ratio = compute_pitch(tts_path)
-            print(f"  TTS    : mean={tts_mean}Hz | std={tts_std}Hz | voiced={tts_voiced_ratio}")
+            tts_median, tts_std, tts_voiced_ratio = compute_pitch(tts_path)
+            print(f"  TTS    : median={tts_median}Hz | std={tts_std}Hz | voiced={tts_voiced_ratio}")
 
-            ref_mean         = None
+            ref_median       = None
             ref_std          = None
             ref_voiced_ratio = None
-            mean_delta       = None
+            median_delta     = None
             std_ratio        = None
-            mean_pass        = None
+            median_pass      = None
             std_ratio_pass   = None
             ref_flag         = "NO_REF"
             is_degraded      = False
@@ -169,8 +166,8 @@ def run_gate(model_state=None):
             if reference_available:
                 ref_path = os.path.join(REFERENCE_DIR, wav_file)
                 if os.path.exists(ref_path):
-                    ref_mean, ref_std, ref_voiced_ratio = compute_pitch(ref_path)
-                    print(f"  Ref    : mean={ref_mean}Hz | std={ref_std}Hz | voiced={ref_voiced_ratio}")
+                    ref_median, ref_std, ref_voiced_ratio = compute_pitch(ref_path)
+                    print(f"  Ref    : median={ref_median}Hz | std={ref_std}Hz | voiced={ref_voiced_ratio}")
 
                     if ref_voiced_ratio is not None and ref_voiced_ratio < 0.2:
                         ref_flag    = "REF_UNVOICED"
@@ -179,9 +176,9 @@ def run_gate(model_state=None):
                     else:
                         ref_flag = "—"
 
-                        if ref_mean is not None and tts_mean is not None:
-                            mean_delta = round(abs(ref_mean - tts_mean), 2)
-                            mean_pass  = mean_delta <= PITCH_MEDIAN_THRESHOLD
+                        if ref_median is not None and tts_median is not None:
+                            median_delta = round(abs(ref_median - tts_median), 2)
+                            median_pass  = median_delta <= PITCH_MEDIAN_THRESHOLD
 
                         if ref_std is not None and tts_std is not None and ref_std > 0:
                             std_ratio      = round(tts_std / ref_std, 3)
@@ -194,7 +191,7 @@ def run_gate(model_state=None):
                 std_abs_pass = None
 
             # final pass/fail
-            if tts_mean is None:
+            if tts_median is None:
                 final_pass = "ERROR"
             else:
                 failures = []
@@ -202,27 +199,27 @@ def run_gate(model_state=None):
                     failures.append("Flat (abs)")
                 if std_ratio_pass is False:
                     failures.append("Flat (vs ref)")
-                if mean_pass is False:
+                if median_pass is False:
                     failures.append("Register")
                 final_pass = "PASS" if not failures else f"FAIL ({', '.join(failures)})"
 
-            print(f"  Result : {final_pass} | Mean Δ: {mean_delta} | "
+            print(f"  Result : {final_pass} | Median Δ: {median_delta} | "
                   f"Std Ratio: {std_ratio} | Degraded: {is_degraded}")
 
             results.append({
                 "Model"         : model,
                 "Sample"        : sample_name,
-                "TTS Mean"      : tts_mean,
+                "TTS Median"    : tts_median,
                 "TTS Std"       : tts_std,
                 "TTS Voiced"    : tts_voiced_ratio,
-                "Ref Mean"      : ref_mean,
+                "Ref Median"    : ref_median,
                 "Ref Std"       : ref_std,
                 "Ref Voiced"    : ref_voiced_ratio,
-                "Mean Delta"    : mean_delta,
+                "Median Delta"  : median_delta,
                 "Std Ratio"     : std_ratio,
                 "Std Abs Pass"  : "PASS" if std_abs_pass else "FAIL" if std_abs_pass is not None else "—",
                 "Std Ratio Pass": "PASS" if std_ratio_pass else "FAIL" if std_ratio_pass is not None else "—",
-                "Mean Pass"     : "PASS" if mean_pass else "FAIL" if mean_pass is not None else "—",
+                "Median Pass"   : "PASS" if median_pass else "FAIL" if median_pass is not None else "—",
                 "Final Pass"    : final_pass,
                 "Ref Flag"      : ref_flag,
                 "_is_degraded"  : is_degraded or is_short,
@@ -250,7 +247,7 @@ def run_gate(model_state=None):
         flat_ratio_count = model_df["Final Pass"].str.contains("Flat \\(vs ref\\)").sum()
         register_count   = model_df["Final Pass"].str.contains("Register").sum()
 
-        deltas = model_df["Mean Delta"].dropna()
+        deltas = model_df["Median Delta"].dropna()
         med_tts_std   = round(model_df["TTS Std"].dropna().median(), 2)
         med_std_ratio = (
             round(model_df["Std Ratio"].dropna().median(), 3)
@@ -300,10 +297,10 @@ def print_results(df, summary_df):
     print("\n========== FULL PER-SEGMENT RESULTS ==========")
     print(df[[
         "Model", "Sample",
-        "TTS Mean", "TTS Std", "TTS Voiced",
-        "Ref Mean", "Ref Std", "Ref Voiced",
-        "Mean Delta", "Std Ratio",
-        "Std Abs Pass", "Std Ratio Pass", "Mean Pass",
+        "TTS Median", "TTS Std", "TTS Voiced",
+        "Ref Median", "Ref Std", "Ref Voiced",
+        "Median Delta", "Std Ratio",
+        "Std Abs Pass", "Std Ratio Pass", "Median Pass",
         "Final Pass", "Ref Flag"
     ]].to_string(index=False))
 
@@ -320,7 +317,7 @@ def print_results(df, summary_df):
     print("Flat Ratio Fails  → TTS flat relative to reference (std ratio < 0.5×)")
     print("Register Fails    → TTS pitch zone wrong vs reference (mean delta > 30 Hz)")
     print("Median Δ / Max Δ  → typical and worst-case pitch zone error across segments")
-    print(f"\nThresholds: Mean Δ <= {config.PITCH_MEDIAN_THRESHOLD}Hz | "
+    print(f"\nThresholds: Median Δ <= {config.PITCH_MEDIAN_THRESHOLD}Hz | "
           f"Std abs >= {config.PITCH_STD_ABS_THRESHOLD}Hz | "
           f"Std ratio >= {config.PITCH_STD_RATIO_THRESHOLD}x ref")
 
