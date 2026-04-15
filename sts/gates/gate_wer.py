@@ -44,7 +44,7 @@ def _find_utmos_python() -> str | None:
     return None
 
 
-def _run_wer_subprocess(input_dir: str, output_dir: str) -> list[dict]:
+def _run_wer_subprocess(input_dir: str, output_dir: str, n_wav: int = 30) -> list[dict]:
     """
     Call _wer_worker_hi.py once for the entire character directory.
     Returns list of result dicts (one per WAV file).
@@ -65,10 +65,12 @@ def _run_wer_subprocess(input_dir: str, output_dir: str) -> list[dict]:
     env["WHISPER_FORCE_CPU"] = "1"
 
     try:
-        # Per-character timeout: ~23 segs × 20s CPU ≈ 8 min + headroom
+        # Dynamic timeout: n_wav × 2 sides × 30s/file + 120s model-load headroom.
+        # 30s/file is conservative for CPU Whisper medium under load.
+        timeout_s = max(600, n_wav * 2 * 30 + 120)
         result = subprocess.run(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, timeout=600, env=env
+            text=True, timeout=timeout_s, env=env
         )
         if result.returncode != 0:
             return [{"sample": None, "wer": None, "wer_error": result.stderr[-500:]}]
@@ -92,7 +94,7 @@ def run_gate(input_dir: str, output_dir_data: str, train_file: str | None, chara
     NM_THR  = WER_THR * (1 + config.WER_NEAR_MISS_MARGIN)
 
     print(f"  [wer] Running Whisper batch on {len(wav_files)} segments ...")
-    batch = _run_wer_subprocess(input_dir, output_dir_data)
+    batch = _run_wer_subprocess(input_dir, output_dir_data, n_wav=len(wav_files))
 
     # Index batch results by sample name
     batch_by_sample = {r["sample"]: r for r in batch if r.get("sample")}
