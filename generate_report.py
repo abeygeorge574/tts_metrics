@@ -32,34 +32,32 @@ log = logging.getLogger("pipeline")
 # ── Gate config ────────────────────────────────────────────────────────────────
 # Which column in each gate's per_segment_results.csv carries the pass/fail value
 _PASS_COL: dict[str, str] = {
-    "wer":             "Both_Pass",
-    "nisqa":           "Final",
-    "utmos":           "Pass",
-    "speaker_sim":     "Pass",
-    "ser":             "Pass",
-    "arousal_valence": "Pass",
-    "pitch":           "Final Pass",
-    "duration":        "Final Pass",
-    "vad":             "Final Pass",
-    "amplitude":       "Final Pass",
-    "accent":          "Final Pass",
+    "wer":         "Final Pass (PASS/NEAR_MISS/FAIL)",
+    "nisqa":       "Final Pass (PASS/NEAR_MISS/REVIEW/FAIL)",
+    "speaker_sim": "Final Pass (PASS/NEAR_MISS/FAIL, threshold≥0.50)",
+    "ser":         "Emotion Pass (PASS/NEAR_MISS/REVIEW/FAIL)",
+    "pitch":       "Final Pass (PASS/NEAR_MISS/REVIEW/FAIL)",
+    "duration":    "Final Pass (PASS/FAIL)",
+    "vad":         "Final Pass (PASS/NEAR_MISS/REVIEW/FAIL)",
+    "amplitude":   "Final Pass (PASS/NEAR_MISS/REVIEW/FAIL)",
+    "accent":      "Final_Pass",
+    "artifact":    "Final Pass (PASS/NEAR_MISS/FAIL)",
 }
 
 GATE_ORDER: list[str] = list(_PASS_COL.keys())
 
 # Display labels for gate axes (shorter for radar readability)
 _GATE_LABEL: dict[str, str] = {
-    "wer":             "WER",
-    "nisqa":           "NISQA",
-    "utmos":           "UTMOS",
-    "speaker_sim":     "SPK SIM",
-    "ser":             "SER",
-    "arousal_valence": "ARO/VAL",
-    "pitch":           "PITCH",
-    "duration":        "DURATION",
-    "vad":             "VAD",
-    "amplitude":       "AMP",
-    "accent":          "ACCENT",
+    "wer":         "WER",
+    "nisqa":       "NISQA",
+    "speaker_sim": "SPK SIM",
+    "ser":         "SER",
+    "pitch":       "PITCH",
+    "duration":    "DURATION",
+    "vad":         "VAD",
+    "amplitude":   "AMP",
+    "accent":      "ACCENT",
+    "artifact":    "ARTIFACT",
 }
 
 # Status → integer encoding for heatmap
