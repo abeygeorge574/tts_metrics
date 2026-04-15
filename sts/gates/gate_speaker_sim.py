@@ -96,6 +96,15 @@ def run_gate(input_dir: str, output_dir_data: str, train_file: str | None, chara
     print(f"  [speaker_sim] Computing train embedding from {os.path.basename(train_file) if train_file else 'N/A'} ...")
     train_emb = _chunk_train_embedding(train_file, classifier) if train_file else None
     if train_emb is not None:
+        # Warn if train data was very short (< 30s → fewer than 3 chunks)
+        try:
+            train_dur = sf.info(train_file).duration if train_file else 0
+            n_chunks_approx = int(train_dur // 10)
+            if n_chunks_approx < 3:
+                print(f"  [speaker_sim] WARNING: train file only ~{train_dur:.0f}s "
+                      f"(~{n_chunks_approx} chunks) — embedding may be unreliable")
+        except Exception:
+            pass
         print(f"  [speaker_sim] Train embedding ready.")
     else:
         print(f"  [speaker_sim] WARNING: no train embedding — primary sim will be SKIP")
@@ -110,6 +119,15 @@ def run_gate(input_dir: str, output_dir_data: str, train_file: str | None, chara
 
         in_dur   = sf.info(in_path).duration
         is_short = in_dur < config.MIN_SEGMENT_DURATION
+
+        if is_short:
+            results.append({"Character": character, "Sample": sample,
+                            "Sim_vs_Train (out vs train)": None,
+                            "Sim_vs_Input (out vs in)": None,
+                            "Train_Pass (PASS/NM/FAIL)": "SKIP",
+                            "Conversion_Check": "SKIP",
+                            "Final_Pass": "SKIP", "Flag": "SHORT"})
+            continue
 
         if not os.path.exists(out_path):
             results.append({"Character": character, "Sample": sample,
@@ -155,11 +173,19 @@ def run_gate(input_dir: str, output_dir_data: str, train_file: str | None, chara
         else:
             conversion_check = "SKIP"
 
-        # Final verdict: primary (output vs train) drives the gate
-        # Conversion weak doesn't fail the gate — it's a diagnostic warning
+        # Final verdict: primary (output vs train) drives the gate.
+        # CONVERSION_WEAK (sim_vs_input >= 0.70) means the STS model likely
+        # didn't convert — output still sounds like the dubbing artist.
+        # If conversion failed AND primary sim is already FAIL, keep FAIL.
+        # If primary passes but conversion clearly failed, mark as NEAR_MISS minimum.
         final = train_pass
-        if "CONVERSION_WEAK" in conversion_check and not final.startswith("FAIL"):
-            final = f"{final}+CONVERSION_WEAK"
+        if "CONVERSION_WEAK" in conversion_check:
+            if final == "PASS":
+                final = "NEAR_MISS+CONVERSION_WEAK"
+            elif final == "NEAR_MISS":
+                final = "NEAR_MISS+CONVERSION_WEAK"
+            elif final == "FAIL":
+                final = "FAIL+CONVERSION_WEAK"
 
         flag = "SHORT" if is_short else "—"
 
