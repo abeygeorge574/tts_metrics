@@ -51,18 +51,25 @@ def load_engine():
 def transcribe(audio_path, engine, model):
     """Returns {'text': str, 'segments': list} or {'text': '', 'segments': [], 'error': str}."""
     try:
+        # no_speech_threshold: return empty rather than hallucinating on silence/noise.
+        # condition_on_previous_text=False: prevents repetition loops on garbled audio.
+        _kwargs = dict(
+            language="hi",
+            word_timestamps=True,
+            no_speech_threshold=0.6,
+            condition_on_previous_text=False,
+        )
         if engine == "cuda":
-            result = model.transcribe(audio_path, language="hi", word_timestamps=True, fp16=True)
+            result = model.transcribe(audio_path, fp16=True, **_kwargs)
         elif engine == "mlx":
             import mlx_whisper
             result = mlx_whisper.transcribe(
                 audio_path,
                 path_or_hf_repo="mlx-community/whisper-medium-mlx",
-                language="hi",
-                word_timestamps=True,
+                **_kwargs,
             )
         else:  # cpu
-            result = model.transcribe(audio_path, language="hi", word_timestamps=True, fp16=False)
+            result = model.transcribe(audio_path, fp16=False, **_kwargs)
         return {"text": result.get("text", "").strip(), "segments": result.get("segments", [])}
     except Exception as e:
         return {"text": "", "segments": [], "error": str(e)}

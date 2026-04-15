@@ -47,9 +47,17 @@ for _p in [_TTS_ROOT, _STS_DIR, _STS_GATES_DIR]:
 
 import config_sts as config
 
-# Gate imports (using sys.path that includes sts/gates/ directly)
-import gate_duration, gate_amplitude, gate_nisqa, gate_artifact
-import gate_ser, gate_pitch, gate_speaker_sim, gate_vad, gate_wer
+# Gate modules are imported lazily on first use so that running a subset of gates
+# (e.g. --gates wer in the utmos Python 3.9 env) does not fail because of missing
+# packages required by other gates (e.g. pyloudnorm for amplitude).
+import importlib as _importlib
+_GATE_CACHE: dict = {}
+
+def _gate(name: str):
+    """Return the gate module, importing it on first call."""
+    if name not in _GATE_CACHE:
+        _GATE_CACHE[name] = _importlib.import_module(f"gate_{name}")
+    return _GATE_CACHE[name]
 
 # ── Gate registry ──────────────────────────────────────────────────────────────
 # Gates that carry loaded models across characters (to avoid reloading per character)
@@ -116,45 +124,54 @@ def run_character_gates(char: dict, run_dir: str, gates_to_run: list,
 
         try:
             if gate_name == "duration":
-                df, summ = gate_duration.run_gate(input_dir, out_dir, train_f, name)
-                gate_duration.save_results(df, summ, gate_out)
+                g = _gate("duration")
+                df, summ = g.run_gate(input_dir, out_dir, train_f, name)
+                g.save_results(df, summ, gate_out)
 
             elif gate_name == "amplitude":
-                df, summ = gate_amplitude.run_gate(input_dir, out_dir, train_f, name)
-                gate_amplitude.save_results(df, summ, gate_out)
+                g = _gate("amplitude")
+                df, summ = g.run_gate(input_dir, out_dir, train_f, name)
+                g.save_results(df, summ, gate_out)
 
             elif gate_name == "nisqa":
+                g = _gate("nisqa")
                 w = model_cache.get("nisqa_weight", config.NISQA_WEIGHT)
-                df, summ = gate_nisqa.run_gate(input_dir, out_dir, train_f, name, nisqa_weight=w)
-                gate_nisqa.save_results(df, summ, gate_out)
+                df, summ = g.run_gate(input_dir, out_dir, train_f, name, nisqa_weight=w)
+                g.save_results(df, summ, gate_out)
 
             elif gate_name == "artifact":
-                df, summ = gate_artifact.run_gate(input_dir, out_dir, train_f, name)
-                gate_artifact.save_results(df, summ, gate_out)
+                g = _gate("artifact")
+                df, summ = g.run_gate(input_dir, out_dir, train_f, name)
+                g.save_results(df, summ, gate_out)
 
             elif gate_name == "ser":
+                g = _gate("ser")
                 ms = model_cache.get("ser_model_state")
-                df, summ, ms = gate_ser.run_gate(input_dir, out_dir, train_f, name, model_state=ms)
+                df, summ, ms = g.run_gate(input_dir, out_dir, train_f, name, model_state=ms)
                 model_cache["ser_model_state"] = ms
-                gate_ser.save_results(df, summ, gate_out)
+                g.save_results(df, summ, gate_out)
 
             elif gate_name == "vad":
-                df, summ = gate_vad.run_gate(input_dir, out_dir, train_f, name)
-                gate_vad.save_results(df, summ, gate_out)
+                g = _gate("vad")
+                df, summ = g.run_gate(input_dir, out_dir, train_f, name)
+                g.save_results(df, summ, gate_out)
 
             elif gate_name == "pitch":
-                df, summ = gate_pitch.run_gate(input_dir, out_dir, train_f, name)
-                gate_pitch.save_results(df, summ, gate_out)
+                g = _gate("pitch")
+                df, summ = g.run_gate(input_dir, out_dir, train_f, name)
+                g.save_results(df, summ, gate_out)
 
             elif gate_name == "speaker_sim":
+                g = _gate("speaker_sim")
                 ms = model_cache.get("spkr_model_state")
-                df, summ, ms = gate_speaker_sim.run_gate(input_dir, out_dir, train_f, name, model_state=ms)
+                df, summ, ms = g.run_gate(input_dir, out_dir, train_f, name, model_state=ms)
                 model_cache["spkr_model_state"] = ms
-                gate_speaker_sim.save_results(df, summ, gate_out)
+                g.save_results(df, summ, gate_out)
 
             elif gate_name == "wer":
-                df, summ = gate_wer.run_gate(input_dir, out_dir, train_f, name)
-                gate_wer.save_results(df, summ, gate_out)
+                g = _gate("wer")
+                df, summ = g.run_gate(input_dir, out_dir, train_f, name)
+                g.save_results(df, summ, gate_out)
 
             summaries[gate_name] = summ
             log.info(f"  [{name}] {gate_name} ✓")
