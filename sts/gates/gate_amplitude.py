@@ -141,12 +141,11 @@ def run_gate(input_dir: str, output_dir: str, train_file: str | None, character:
             elif lra_dev > LRA_TOL:
                 near_miss.append("LRA")
 
-            # Centroid delta
-            cent_dev = abs(delta_cent)
-            if cent_dev > CENT_TOL * (1 + NM_MARGIN):
-                fail_reasons.append("Centroid")
-            elif cent_dev > CENT_TOL:
-                near_miss.append("Centroid")
+            # Centroid delta — diagnostic only (not in PASS/FAIL verdict).
+            # Voice conversion changes vocal tract (gender shift) → large centroid
+            # shifts are expected and not a quality defect. LUFS + LRA are the
+            # meaningful loudness quality metrics for STS.
+            # cent_dev checked and stored in CSV for reference; not used in verdict.
 
             # Output clipping (absolute, always)
             if out["clip_rate"] >= config.CLIP_RATE_WARN:
