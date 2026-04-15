@@ -444,8 +444,8 @@ def run_gate(model_state=None):
             "Model"                                      : model,
             "Total Segments"                             : total,
             "Clean Segments"                             : clean_total,
-            "Clean Pass Rate (PASS+REVIEW / non-degraded)": f"{clean_pass_review}/{clean_total}" if clean_total > 0 else "—",
-            "Near Miss (within 20% of threshold)"        : near_miss_count,
+            "Clean Pass Rate (PASS / non-degraded)": f"{clean_pass_review}/{clean_total}" if clean_total > 0 else "—",
+            "Near Miss (threshold exceeded ≤20% margin)"        : near_miss_count,
             "Review (ref dense, TTS rate OK)"            : int(review_count),
             "Degraded Segments"                          : len(degraded_df),
             "Count Fails"                                : count_fails,
@@ -463,7 +463,7 @@ def run_gate(model_state=None):
             return -1
         return int(rate_str.split("/")[0])
 
-    summary_df["_clean_pass_num"] = summary_df["Clean Pass Rate (PASS+REVIEW / non-degraded)"].apply(parse_rate)
+    summary_df["_clean_pass_num"] = summary_df["Clean Pass Rate (PASS / non-degraded)"].apply(parse_rate)
     summary_df["_review_num"]     = summary_df["Review (ref dense, TTS rate OK)"]
     summary_df["_med_pos"]        = summary_df["Median Pos Offset"].fillna(999)
 
@@ -496,8 +496,8 @@ def print_results(df, summary_df):
     print("\n========== MODEL COMPARISON SUMMARY ==========")
     print(summary_df[[
         "Model",
-        "Clean Pass Rate (PASS+REVIEW / non-degraded)",
-        "Near Miss (within 20% of threshold)",
+        "Clean Pass Rate (PASS / non-degraded)",
+        "Near Miss (threshold exceeded ≤20% margin)",
         "Review (ref dense, TTS rate OK)",
         "Count Fails", "Position Fails", "Duration Fails",
         "Median Pos Offset", "Median Dur Ratio"

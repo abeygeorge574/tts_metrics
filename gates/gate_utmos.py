@@ -140,7 +140,7 @@ def run_gate(model_state=None):
     scorer = model_state["scorer"]
     device = model_state.get("device", "cpu")
 
-    MODELS_DIR = config.MODELS_DIR
+    MODELS_DIR = (model_state or {}).get("models_dir") or config.MODELS_DIR
 
     if not os.path.exists(MODELS_DIR):
         raise FileNotFoundError(f"Models folder not found: {MODELS_DIR}")
@@ -270,10 +270,14 @@ def save_results(df, summary_df, output_dir):
 # ── Entry point ────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="UTMOS gate")
-    parser.add_argument("--output-dir", default=os.path.join(config.OUTPUT_DIR, "utmos"))
+    parser.add_argument("--output-dir",  default=os.path.join(config.OUTPUT_DIR, "utmos"))
+    parser.add_argument("--models-dir",  default=None, help="Override config.MODELS_DIR")
+    parser.add_argument("--ref-dir",     default=None, help="Audio reference dir (unused by UTMOS, accepted for pipeline compatibility)")
     args = parser.parse_args()
 
-    model_state    = load_model()
+    model_state = load_model()
+    if args.models_dir:
+        model_state["models_dir"] = os.path.abspath(args.models_dir)
     df, summary_df = run_gate(model_state)
     print_results(df, summary_df)
     save_results(df, summary_df, args.output_dir)

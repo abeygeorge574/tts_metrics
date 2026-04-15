@@ -137,10 +137,6 @@ SPEAKER_SIM_THRESHOLD = 0.50
 
 # ── SER thresholds ─────────────────────────────────────────────────────────────
 SER_CONFIDENCE_THRESHOLD = 0.5
-# A FAIL becomes NEAR_MISS if the confidence gap between top-1 and the reference
-# label (on the TTS side) OR between top-1 and top-2 (on the reference side) is
-# within this margin. Both checks use the same margin.
-SER_NEAR_MISS_MARGIN = 0.10
 
 # ── Pitch thresholds ───────────────────────────────────────────────────────────
 PITCH_MEDIAN_THRESHOLD    = 30.0   # Hz — max acceptable |ref_median - tts_median|
@@ -152,10 +148,6 @@ TTS_PITCH_STD_ABS_MIN     = 5.0    # Hz — TTS F0 std below this → Flat_Abs f
 
 # ── Duration thresholds ────────────────────────────────────────────────────────
 DURATION_TOLERANCE        = 0.10   # ±10%
-DURATION_NEAR_MISS_MARGIN = 0.20   # 20% of tolerance band beyond threshold → NEAR_MISS
-REF_DUR_MIN               = 0.5    # seconds — ref shorter than this = degraded baseline
-TTS_DUR_ABS_MIN           = 0.5    # seconds — TTS shorter than this = near-silent
-TTS_DUR_ABS_MAX           = 30.0   # seconds — TTS longer than this = suspicious
 
 # ── VAD / Pause alignment thresholds ──────────────────────────────────────────
 SILENCE_DB                  = -40    # dB threshold for silence detection

@@ -2,15 +2,18 @@
 run_pipeline.py — main entry point for the TTS evaluation pipeline.
 
 Gates and their environments:
-  utmos env (python 3.9) : wer, utmos, accent
-  base env  (python 3.13): nisqa, speaker_sim, ser, pitch, duration, vad, amplitude
+  utmos env (python 3.9) : wer
+  base env  (python 3.13): nisqa, speaker_sim, ser, pitch, duration, vad, amplitude, accent, artifact
+
+Note: utmos gate exists but is dropped (same verdicts as NISQA, redundant).
+      arousal_valence is merged into the ser gate (arousal delta column in SER output).
 
 Gates in the utmos env are invoked as subprocess calls using the conda env python,
 so this script must be run from the base env.
 
 Usage:
   python run_pipeline.py                        # run all gates
-  python run_pipeline.py --gates wer utmos      # run specific gates
+  python run_pipeline.py --gates wer nisqa      # run specific gates
   python run_pipeline.py --skip nisqa           # skip specific gates
   python run_pipeline.py --output-dir /path/to/out
 """

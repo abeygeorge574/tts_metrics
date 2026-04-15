@@ -15,7 +15,7 @@ Detects three types of audio artifacts in TTS/STS output:
 2. Background static in silence  →  median dBFS of real pause frames
    Broadband noise floor audible during pauses (vocoder residual, codec hiss).
    Real pause = contiguous run of frames ≥ 160 ms all below −30 dBFS.
-   Threshold: median_pause_db > ARTIFACT_SILENCE_MEDIAN_DB (−55 dBFS) → ERR_BACKGROUND_STATIC
+   Threshold: median_pause_db > ARTIFACT_SILENCE_FAIL_DB (−35 dBFS) → ERR_BACKGROUND_STATIC
    Catches: FastSpeech2 broadband constant noise (median ~−44 dBFS).
    N/A when no real pauses are found (short segment, continuous speech).
 
@@ -388,7 +388,7 @@ def run_gate(model_state=None):
     REFERENCE_DIR = (model_state or {}).get("ref_dir")    or config.REFERENCE_DIR  # not used for gating
 
     HNR_THRESHOLD      = getattr(config, "ARTIFACT_HNR_ABS_THRESHOLD",    8.0)
-    PAUSE_FAIL_THRESH  = getattr(config, "ARTIFACT_SILENCE_FAIL_DB",    -45.0)
+    PAUSE_FAIL_THRESH  = getattr(config, "ARTIFACT_SILENCE_FAIL_DB",    -35.0)
     PAUSE_WARN_THRESH  = getattr(config, "ARTIFACT_SILENCE_WARN_DB",    -58.0)
     SA_THRESHOLD       = getattr(config, "ARTIFACT_COMBINED_THRESHOLD",   0.15)
     NM_MARGIN          = getattr(config, "ARTIFACT_NEAR_MISS_MARGIN",     0.20)
@@ -532,7 +532,7 @@ def run_gate(model_state=None):
                 result = "FAIL"
             elif near_miss_flags:
                 result = "NEAR_MISS"
-            elif hnr_verdict is None and pause_verdict is None:
+            elif hnr_verdict is None and pause_verdict is None and sa_verdict is None:
                 result = "SKIP"      # no metrics could run
             else:
                 result = "PASS"

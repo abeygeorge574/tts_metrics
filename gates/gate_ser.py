@@ -295,7 +295,7 @@ def run_gate(model_state=None):
             "Emotion Pass Rate (PASS / scored)"               : f"{e_pass}/{total}",
             "Emotion Pass+NearMiss Rate (PASS+NEAR_MISS / scored)": f"{e_pass + e_nm}/{total}",
             "Arousal Pass Rate (PASS / scored)"               : f"{ar_pass}/{ar_total}",
-            "Near Miss (within 20% of threshold)"             : int(e_nm),
+            "Near Miss (top-2 label overlap)"             : int(e_nm),
             "Review (ref low conf, TTS conf OK)"              : int(review_count),
             "Degraded Segments"                               : int(degraded_count),
             "Median Arousal Δ"                                : round(scored_df[ar_delta_col].dropna().median(), 4) if total > 0 else None,
