@@ -190,29 +190,30 @@ def run_gate(model_state=None):
                         return "NEAR_MISS"
                     return "FAIL"
 
+                # Absolute TTS sanity check — always runs regardless of ref quality
+                abs_fails = []
+                if not (TTS_LUFS_ABS_MIN <= tts_lufs <= TTS_LUFS_ABS_MAX):
+                    abs_fails.append("Volume_Abs")
+                if not (TTS_LRA_ABS_MIN <= tts_lra <= TTS_LRA_ABS_MAX):
+                    abs_fails.append("Dynamics_Abs")
+
                 if tts_hard_clip:
                     final_pass = "FAIL (Clipping)"
 
+                elif abs_fails:
+                    final_pass = f"FAIL ({', '.join(abs_fails)})"
+
                 elif is_degraded:
-                    # Delta checks skipped — run absolute sanity bounds on TTS only
-                    abs_fails = []
-                    if not (TTS_LUFS_ABS_MIN <= tts_lufs <= TTS_LUFS_ABS_MAX):
-                        abs_fails.append("Volume_Abs")
-                    if not (TTS_LRA_ABS_MIN <= tts_lra <= TTS_LRA_ABS_MAX):
-                        abs_fails.append("Dynamics_Abs")
-                    if abs_fails:
-                        final_pass = f"FAIL ({', '.join(abs_fails)})"
-                    else:
-                        # TTS is sane but ref was unreliable — flag for human review
-                        final_pass = "REVIEW"
+                    # Delta checks skipped — ref was unreliable, TTS passes abs bounds
+                    final_pass = "REVIEW"
 
                 else:
                     lufs_v = _check(lufs_diff, LUFS_TOLERANCE)
                     lra_v  = _check(lra_diff,  LRA_TOLERANCE)
                     cent_v = _check(cent_diff, CENTROID_TOLERANCE)
 
-                    hard_fails  = [n for n, v in [("Volume", lufs_v), ("Dynamics", lra_v), ("EQ", cent_v)] if v == "FAIL"]
-                    near_misses = [n for n, v in [("Volume", lufs_v), ("Dynamics", lra_v), ("EQ", cent_v)] if v == "NEAR_MISS"]
+                    hard_fails  = [n for n, v in [("Volume_Delta", lufs_v), ("Dynamics_Delta", lra_v), ("EQ_Delta", cent_v)] if v == "FAIL"]
+                    near_misses = [n for n, v in [("Volume_Delta", lufs_v), ("Dynamics_Delta", lra_v), ("EQ_Delta", cent_v)] if v == "NEAR_MISS"]
 
                     if hard_fails:
                         final_pass = f"FAIL ({', '.join(hard_fails)})"
@@ -223,7 +224,7 @@ def run_gate(model_state=None):
 
                     # NEAR_CLIP warning appended to any non-FAIL verdict
                     if tts_near_clip and not final_pass.startswith("FAIL"):
-                        final_pass += " +NEAR_CLIP"
+                        final_pass += " +NEAR_CLIP_Abs"
 
                 print(f"  Result : {final_pass} | Degraded: {is_degraded} | Peak: {peak_flag}")
 
@@ -290,36 +291,29 @@ def run_gate(model_state=None):
 
         FINAL_COL = "Final Pass (PASS/NEAR_MISS/REVIEW/FAIL)"
         fp = model_df[FINAL_COL]
-        clipping_count  = fp.str.contains("Clipping",     na=False).sum()
-        volume_count    = fp.str.contains("Volume",       na=False).sum()
-        dynamics_count  = fp.str.contains("Dynamics",     na=False).sum()
-        eq_count        = fp.str.contains("EQ",           na=False).sum()
-        near_miss_count = fp.str.startswith("NEAR_MISS",  na=False).sum()
+        clipping_count  = (fp.str.startswith("FAIL") & fp.str.contains("Clipping",       na=False)).sum()
+        volume_count    = (fp.str.startswith("FAIL") & fp.str.contains("Volume",         na=False)).sum()
+        dynamics_count  = (fp.str.startswith("FAIL") & fp.str.contains("Dynamics",       na=False)).sum()
+        eq_count        = (fp.str.startswith("FAIL") & fp.str.contains("EQ_Delta",       na=False)).sum()
+        near_miss_count = fp.str.startswith("NEAR_MISS", na=False).sum()
         review_count    = (fp == "REVIEW").sum()
         near_clip_count = model_df["Peak Flag"].eq("NEAR_CLIP").sum()
         error_count     = (fp == "ERROR").sum()
 
-        # Degraded pass rate: REVIEW counts as "pass" for degraded segments
-        deg_fp   = degraded_df[FINAL_COL]
-        deg_pass = (deg_fp.isin(["REVIEW"]) |
-                    deg_fp.str.startswith("NEAR_MISS", na=False) |
-                    deg_fp.str.startswith("PASS", na=False)).sum()
-
         summary_rows.append({
-            "Model"                       : model,
-            "Total Segments"              : total,
-            "Clean Segments"              : clean_total,
-            "Clean Pass Rate (PASS only)" : f"{clean_pass}/{clean_total}"  if clean_total > 0 else "—",
-            "Degraded Segments"           : deg_total,
-            "Degraded Pass Rate"          : f"{deg_pass}/{deg_total}"      if deg_total > 0 else "—",
-            "Near Miss"                   : near_miss_count,
-            "Review"                      : review_count,
-            "Near Clip"                   : near_clip_count,
-            "Clipping Fails"              : clipping_count,
-            "Volume Fails"                : volume_count,
-            "Dynamics Fails"              : dynamics_count,
-            "EQ Fails"                    : eq_count,
-            "Errors"                      : error_count,
+            "Model"                                   : model,
+            "Total Segments"                          : total,
+            "Clean Segments"                          : clean_total,
+            "Clean Pass Rate (PASS only)"             : f"{clean_pass}/{clean_total}" if clean_total > 0 else "—",
+            "Degraded Segments"                       : deg_total,
+            "Review (degraded ref, TTS sane)"         : review_count,
+            "Near Miss (delta only)"                  : near_miss_count,
+            "Near Clip (abs only)"                    : near_clip_count,
+            "Clipping Fails (abs)"                    : clipping_count,
+            "Volume Fails (delta+abs)"                : volume_count,
+            "Dynamics Fails (delta+abs)"              : dynamics_count,
+            "EQ Fails (delta only)"                   : eq_count,
+            "Errors"                                  : error_count,
         })
 
     summary_df = pd.DataFrame(summary_rows)
@@ -329,15 +323,14 @@ def run_gate(model_state=None):
             return -1
         return int(rate_str.split("/")[0])
 
-    summary_df["_clean_pass_num"]    = summary_df["Clean Pass Rate (PASS only)"].apply(parse_rate)
-    summary_df["_degraded_pass_num"] = summary_df["Degraded Pass Rate"].apply(parse_rate)
+    summary_df["_clean_pass_num"] = summary_df["Clean Pass Rate (PASS only)"].apply(parse_rate)
 
     summary_df = summary_df.sort_values(
-        by=["_clean_pass_num", "_degraded_pass_num",
-            "Clipping Fails", "Volume Fails", "Dynamics Fails", "EQ Fails",
-            "Near Miss", "Near Clip", "Errors"],
-        ascending=[False, False, True, True, True, True, True, True, True]
-    ).drop(columns=["_clean_pass_num", "_degraded_pass_num"])
+        by=["_clean_pass_num",
+            "Clipping Fails (abs)", "Volume Fails (delta+abs)", "Dynamics Fails (delta+abs)", "EQ Fails (delta only)",
+            "Near Miss (delta only)", "Near Clip (abs only)", "Errors"],
+        ascending=[False, True, True, True, True, True, True, True]
+    ).drop(columns=["_clean_pass_num"])
 
     return df, summary_df
 
@@ -350,20 +343,20 @@ def print_results(df, summary_df):
 
     print("\n========== MODEL COMPARISON SUMMARY ==========")
     print(summary_df[[
-        "Model", "Clean Pass Rate (PASS only)", "Degraded Pass Rate",
-        "Near Miss", "Review", "Near Clip",
-        "Clipping Fails", "Volume Fails", "Dynamics Fails", "EQ Fails"
+        "Model", "Clean Pass Rate (PASS only)", "Degraded Segments", "Review (degraded ref, TTS sane)",
+        "Near Miss (delta only)", "Near Clip (abs only)",
+        "Clipping Fails (abs)", "Volume Fails (delta+abs)", "Dynamics Fails (delta+abs)", "EQ Fails (delta only)"
     ]].to_string(index=False))
 
     print("\n========== WHAT TO LOOK FOR ==========")
-    print("Clean Pass Rate → primary ranking (ref LUFS within -40 to -5, not short, not clipped)")
-    print("NEAR_MISS       → delta within 20% of threshold — marginal, not hard fail")
-    print("REVIEW          → ref was degraded, TTS passes absolute bounds — needs human check")
-    print("NEAR_CLIP       → <0.1% of samples exceed peak limit — warn only, not fail")
-    print("Clipping Fails  → >=0.1% of samples exceed peak limit — hard fail")
-    print("Volume Fails    → LUFS delta > threshold (hard fail)")
-    print("Dynamics Fails  → LRA delta > threshold (hard fail)")
-    print("EQ Fails        → centroid delta > threshold (hard fail)")
+    print("Clean Pass Rate          → primary ranking")
+    print("Near Miss (delta only)   → marginal delta, not hard fail — ref was clean")
+    print("Review (degraded ref)    → ref unreliable, TTS sane on abs — needs human listen")
+    print("Near Clip (abs only)     → <0.1% samples near peak — warn only, not fail")
+    print("Clipping Fails (abs)     → >=0.1% samples clipping — always absolute, no ref needed")
+    print("Volume Fails (delta+abs) → LUFS_Delta > 6.5 OR TTS LUFS outside [-40,-5]")
+    print("Dynamics Fails (delta+abs)→ LRA_Delta > 3.0 OR TTS LRA outside [0.5,20]")
+    print("EQ Fails (delta only)    → centroid delta > 500Hz — delta only, no abs check")
     print(f"\nThresholds: LUFS ±{config.LUFS_TOLERANCE} | LRA ±{config.LRA_TOLERANCE} | "
           f"Centroid ±{config.CENTROID_TOLERANCE}Hz | Peak < {config.PEAK_LIMIT}dBFS")
 

@@ -209,6 +209,11 @@ def run_gate(model_state=None):
     REFERENCE_DIR = (model_state or {}).get("ref_dir")    or config.REFERENCE_DIR
 
     REF_PAUSES_PER_SECOND_LIMIT = config.REF_PAUSES_PER_SECOND_LIMIT
+    VAD_NEAR_MISS_MARGIN        = config.VAD_NEAR_MISS_MARGIN
+    TTS_PAUSES_PER_SEC_MAX      = config.TTS_PAUSES_PER_SEC_MAX
+    POSITION_OFFSET_THRESHOLD   = config.POSITION_OFFSET_THRESHOLD
+    DURATION_RATIO_MIN          = config.VAD_DURATION_RATIO_MIN
+    DURATION_RATIO_MAX          = config.VAD_DURATION_RATIO_MAX
 
     for folder in [REFERENCE_DIR, MODELS_DIR]:
         if not os.path.exists(folder):
@@ -270,12 +275,22 @@ def run_gate(model_state=None):
             if not os.path.exists(ref_path):
                 print(f"  Skipping {sample_name} — no reference file")
                 results.append({
-                    "Model": model, "Sample": sample_name,
-                    "Ref Pauses": None, "TTS Pauses": None, "Matched": None,
-                    "Unmatched Ref": None, "Unmatched TTS": None, "Count Delta": None,
-                    "Med Pos Offset": None, "Med Dur Ratio": None,
-                    "Count Pass": "—", "Position Pass": "—", "Duration Pass": "—",
-                    "Final Pass": "NO_REF", "Ref Flag": "NO_REF", "_is_degraded": True,
+                    "Model"                                           : model,
+                    "Sample"                                          : sample_name,
+                    "Ref Pauses"                                      : None,
+                    "TTS Pauses"                                      : None,
+                    "Matched"                                         : None,
+                    "Unmatched Ref"                                   : None,
+                    "Unmatched TTS"                                   : None,
+                    "Count Delta (threshold≤20)"                      : None,
+                    "Med Pos Offset s (threshold≤0.20s)"              : None,
+                    "Med Dur Ratio (pass band 0.75–1.25)"             : None,
+                    "Count Pass"                                      : "—",
+                    "Position Pass"                                   : "—",
+                    "Duration Pass"                                   : "—",
+                    "Final Pass (PASS/NEAR_MISS/REVIEW/FAIL)"         : "NO_REF",
+                    "Ref Flag (—=clean|REF_DENSE=pauses/sec>1.0)"    : "NO_REF",
+                    "_is_degraded"                                    : True,
                 })
                 continue
 
@@ -295,15 +310,54 @@ def run_gate(model_state=None):
 
                 cmp = compare_pauses(ref_pauses, tts_pauses)
 
-                failures = []
-                if not cmp["count_pass"]:
-                    failures.append("Count")
-                if cmp["position_pass"] is False:
-                    failures.append("Position")
-                if cmp["duration_pass"] is False:
-                    failures.append("Duration")
+                if is_degraded:
+                    # REVIEW if TTS rate is within absolute bounds, else FAIL
+                    tts_pauses_per_sec = len(tts_pauses) / ref_duration if ref_duration > 0 else 0
+                    tts_rate_ok        = tts_pauses_per_sec <= TTS_PAUSES_PER_SEC_MAX
+                    if tts_rate_ok:
+                        final_pass = "REVIEW"
+                    else:
+                        final_pass = "FAIL (Dense_Abs)"
+                else:
+                    # Near-miss logic: collect near_misses and hard_fails separately
+                    near_misses = []
+                    hard_fails  = []
 
-                final_pass = "PASS" if not failures else f"FAIL ({', '.join(failures)})"
+                    # Count check
+                    if not cmp["count_pass"]:
+                        hard_fails.append("Count")
+
+                    # Position near-miss
+                    pos_offset = cmp["med_position_offset"]
+                    pos_nm_upper = POSITION_OFFSET_THRESHOLD * (1 + VAD_NEAR_MISS_MARGIN)
+                    if pos_offset is not None:
+                        if pos_offset > POSITION_OFFSET_THRESHOLD:
+                            if pos_offset <= pos_nm_upper:
+                                near_misses.append("Position")
+                            else:
+                                hard_fails.append("Position")
+                    # position_pass=None means no matched pairs → not a failure
+
+                    # Duration near-miss
+                    dur_ratio  = cmp["med_duration_ratio"]
+                    dur_nm_min = DURATION_RATIO_MIN * (1 - VAD_NEAR_MISS_MARGIN)
+                    dur_nm_max = DURATION_RATIO_MAX * (1 + VAD_NEAR_MISS_MARGIN)
+                    if dur_ratio is not None:
+                        in_pass_band = DURATION_RATIO_MIN <= dur_ratio <= DURATION_RATIO_MAX
+                        in_nm_band   = (dur_nm_min <= dur_ratio < DURATION_RATIO_MIN) or \
+                                       (DURATION_RATIO_MAX < dur_ratio <= dur_nm_max)
+                        if not in_pass_band:
+                            if in_nm_band:
+                                near_misses.append("Duration")
+                            else:
+                                hard_fails.append("Duration")
+
+                    if hard_fails:
+                        final_pass = f"FAIL ({', '.join(hard_fails)})"
+                    elif near_misses:
+                        final_pass = f"NEAR_MISS ({', '.join(near_misses)})"
+                    else:
+                        final_pass = "PASS"
 
                 print(f"  Matched: {cmp['matched_count']} | "
                       f"Unmatched ref: {cmp['unmatched_ref']} | "
@@ -312,84 +366,94 @@ def run_gate(model_state=None):
                       f"Pos: {cmp['med_position_offset']}s | Dur ratio: {cmp['med_duration_ratio']}")
 
                 results.append({
-                    "Model"          : model,
-                    "Sample"         : sample_name,
-                    "Ref Pauses"     : cmp["ref_count"],
-                    "TTS Pauses"     : cmp["tts_count"],
-                    "Matched"        : cmp["matched_count"],
-                    "Unmatched Ref"  : cmp["unmatched_ref"],
-                    "Unmatched TTS"  : cmp["unmatched_tts"],
-                    "Count Delta"    : cmp["count_delta"],
-                    "Med Pos Offset" : cmp["med_position_offset"],
-                    "Med Dur Ratio"  : cmp["med_duration_ratio"],
-                    "Count Pass"     : "PASS" if cmp["count_pass"] else "FAIL",
-                    "Position Pass"  : "PASS" if cmp["position_pass"] else "FAIL" if cmp["position_pass"] is not None else "—",
-                    "Duration Pass"  : "PASS" if cmp["duration_pass"] else "FAIL" if cmp["duration_pass"] is not None else "—",
-                    "Final Pass"     : final_pass,
-                    "Ref Flag"       : ref_flag,
-                    "_is_degraded"   : is_degraded,
+                    "Model"                                          : model,
+                    "Sample"                                         : sample_name,
+                    "Ref Pauses"                                     : cmp["ref_count"],
+                    "TTS Pauses"                                     : cmp["tts_count"],
+                    "Matched"                                        : cmp["matched_count"],
+                    "Unmatched Ref"                                  : cmp["unmatched_ref"],
+                    "Unmatched TTS"                                  : cmp["unmatched_tts"],
+                    "Count Delta (threshold≤20)"                     : cmp["count_delta"],
+                    "Med Pos Offset s (threshold≤0.20s)"             : cmp["med_position_offset"],
+                    "Med Dur Ratio (pass band 0.75–1.25)"            : cmp["med_duration_ratio"],
+                    "Count Pass"                                     : "PASS" if cmp["count_pass"] else "FAIL",
+                    "Position Pass"                                  : "PASS" if cmp["position_pass"] else "FAIL" if cmp["position_pass"] is not None else "—",
+                    "Duration Pass"                                  : "PASS" if cmp["duration_pass"] else "FAIL" if cmp["duration_pass"] is not None else "—",
+                    "Final Pass (PASS/NEAR_MISS/REVIEW/FAIL)"        : final_pass,
+                    "Ref Flag (—=clean|REF_DENSE=pauses/sec>1.0)"   : ref_flag,
+                    "_is_degraded"                                   : is_degraded,
                 })
 
             except Exception as e:
                 print(f"  ERROR: {e}")
                 results.append({
-                    "Model"         : model,
-                    "Sample"        : sample_name,
-                    "Ref Pauses"    : None,
-                    "TTS Pauses"    : None,
-                    "Matched"       : None,
-                    "Unmatched Ref" : None,
-                    "Unmatched TTS" : None,
-                    "Count Delta"   : None,
-                    "Med Pos Offset": None,
-                    "Med Dur Ratio" : None,
-                    "Count Pass"    : "—",
-                    "Position Pass" : "—",
-                    "Duration Pass" : "—",
-                    "Final Pass"    : "ERROR",
-                    "Ref Flag"      : "ERROR",
-                    "_is_degraded"  : False,
+                    "Model"                                          : model,
+                    "Sample"                                         : sample_name,
+                    "Ref Pauses"                                     : None,
+                    "TTS Pauses"                                     : None,
+                    "Matched"                                        : None,
+                    "Unmatched Ref"                                  : None,
+                    "Unmatched TTS"                                  : None,
+                    "Count Delta (threshold≤20)"                     : None,
+                    "Med Pos Offset s (threshold≤0.20s)"             : None,
+                    "Med Dur Ratio (pass band 0.75–1.25)"            : None,
+                    "Count Pass"                                     : "—",
+                    "Position Pass"                                  : "—",
+                    "Duration Pass"                                  : "—",
+                    "Final Pass (PASS/NEAR_MISS/REVIEW/FAIL)"        : "ERROR",
+                    "Ref Flag (—=clean|REF_DENSE=pauses/sec>1.0)"   : "ERROR",
+                    "_is_degraded"                                   : False,
                 })
 
     print("\n\nAll evaluations complete.")
 
     df = pd.DataFrame(results)
 
+    fp_col  = "Final Pass (PASS/NEAR_MISS/REVIEW/FAIL)"
+    pos_col = "Med Pos Offset s (threshold≤0.20s)"
+    dur_col = "Med Dur Ratio (pass band 0.75–1.25)"
+
     summary_rows = []
     for model in model_folders:
         model_df    = df[df["Model"] == model]
-        clean_df    = model_df[~model_df["_is_degraded"] & (model_df["Final Pass"] != "ERROR")]
+        clean_df    = model_df[~model_df["_is_degraded"] & (model_df[fp_col] != "ERROR")]
         degraded_df = model_df[model_df["_is_degraded"]]
         total       = len(model_df)
 
-        clean_total = len(clean_df)
-        clean_pass  = (clean_df["Final Pass"] == "PASS").sum()
+        clean_total  = len(clean_df)
+        clean_pass   = (clean_df[fp_col] == "PASS").sum()
+        clean_nm     = clean_df[fp_col].str.startswith("NEAR_MISS").sum()
+        # Clean Pass Rate = PASS + REVIEW / non-degraded (REVIEW only in degraded so = PASS here)
+        clean_pass_review = clean_pass  # REVIEW only appears in degraded segments
 
-        deg_total   = len(degraded_df)
-        deg_pass    = (degraded_df["Final Pass"] == "PASS").sum()
+        # REVIEW count = degraded segments that got REVIEW verdict
+        review_count = (degraded_df[fp_col] == "REVIEW").sum()
 
-        count_fails    = model_df["Final Pass"].str.contains("Count").sum()
-        position_fails = model_df["Final Pass"].str.contains("Position").sum()
-        duration_fails = model_df["Final Pass"].str.contains("Duration").sum()
-        error_count    = (model_df["Final Pass"] == "ERROR").sum()
+        near_miss_count = int(clean_nm)
 
-        valid    = model_df[model_df["Med Pos Offset"].notna()]
-        med_pos  = round(valid["Med Pos Offset"].median(), 3) if len(valid) > 0 else None
-        med_dur  = round(valid["Med Dur Ratio"].median(), 3)  if len(valid) > 0 else None
+        count_fails    = (model_df[fp_col].str.startswith("FAIL") & model_df[fp_col].str.contains("Count",    na=False)).sum()
+        position_fails = (model_df[fp_col].str.startswith("FAIL") & model_df[fp_col].str.contains("Position", na=False)).sum()
+        duration_fails = (model_df[fp_col].str.startswith("FAIL") & model_df[fp_col].str.contains("Duration", na=False)).sum()
+        error_count    = (model_df[fp_col] == "ERROR").sum()
+
+        valid    = model_df[model_df[pos_col].notna()]
+        med_pos  = round(valid[pos_col].median(), 3) if len(valid) > 0 else None
+        med_dur  = round(valid[dur_col].median(), 3)  if len(valid) > 0 else None
 
         summary_rows.append({
-            "Model"             : model,
-            "Total Segments"    : total,
-            "Clean Segments"    : clean_total,
-            "Clean Pass Rate"   : f"{clean_pass}/{clean_total}"  if clean_total > 0 else "—",
-            "Degraded Segments" : deg_total,
-            "Degraded Pass Rate": f"{deg_pass}/{deg_total}"      if deg_total > 0 else "—",
-            "Count Fails"       : count_fails,
-            "Position Fails"    : position_fails,
-            "Duration Fails"    : duration_fails,
-            "Errors"            : error_count,
-            "Median Pos Offset" : med_pos,
-            "Median Dur Ratio"  : med_dur,
+            "Model"                                      : model,
+            "Total Segments"                             : total,
+            "Clean Segments"                             : clean_total,
+            "Clean Pass Rate (PASS+REVIEW / non-degraded)": f"{clean_pass_review}/{clean_total}" if clean_total > 0 else "—",
+            "Near Miss (within 20% of threshold)"        : near_miss_count,
+            "Review (ref dense, TTS rate OK)"            : int(review_count),
+            "Degraded Segments"                          : len(degraded_df),
+            "Count Fails"                                : count_fails,
+            "Position Fails"                             : position_fails,
+            "Duration Fails"                             : duration_fails,
+            "Errors"                                     : error_count,
+            "Median Pos Offset"                          : med_pos,
+            "Median Dur Ratio"                           : med_dur,
         })
 
     summary_df = pd.DataFrame(summary_rows)
@@ -399,39 +463,50 @@ def run_gate(model_state=None):
             return -1
         return int(rate_str.split("/")[0])
 
-    summary_df["_clean_pass_num"]    = summary_df["Clean Pass Rate"].apply(parse_rate)
-    summary_df["_degraded_pass_num"] = summary_df["Degraded Pass Rate"].apply(parse_rate)
-    summary_df["_med_pos"]           = summary_df["Median Pos Offset"].fillna(999)
+    summary_df["_clean_pass_num"] = summary_df["Clean Pass Rate (PASS+REVIEW / non-degraded)"].apply(parse_rate)
+    summary_df["_review_num"]     = summary_df["Review (ref dense, TTS rate OK)"]
+    summary_df["_med_pos"]        = summary_df["Median Pos Offset"].fillna(999)
 
     summary_df = summary_df.sort_values(
-        by=["_clean_pass_num", "_degraded_pass_num", "_med_pos"],
+        by=["_clean_pass_num", "_review_num", "_med_pos"],
         ascending=[False, False, True]
-    ).drop(columns=["_clean_pass_num", "_degraded_pass_num", "_med_pos"])
+    ).drop(columns=["_clean_pass_num", "_review_num", "_med_pos"])
 
     return df, summary_df
 
 
 # ── Print results ──────────────────────────────────────────────────────────────
 def print_results(df, summary_df):
+    fp_col  = "Final Pass (PASS/NEAR_MISS/REVIEW/FAIL)"
+    pos_col = "Med Pos Offset s (threshold≤0.20s)"
+    dur_col = "Med Dur Ratio (pass band 0.75–1.25)"
+    cnt_col = "Count Delta (threshold≤20)"
+    flag_col = "Ref Flag (—=clean|REF_DENSE=pauses/sec>1.0)"
+
     print("\n========== FULL PER-SEGMENT RESULTS ==========")
     print(df[[
         "Model", "Sample",
         "Ref Pauses", "TTS Pauses", "Matched",
-        "Unmatched Ref", "Unmatched TTS", "Count Delta",
-        "Med Pos Offset", "Med Dur Ratio",
+        "Unmatched Ref", "Unmatched TTS", cnt_col,
+        pos_col, dur_col,
         "Count Pass", "Position Pass", "Duration Pass",
-        "Final Pass", "Ref Flag"
+        fp_col, flag_col
     ]].to_string(index=False))
 
     print("\n========== MODEL COMPARISON SUMMARY ==========")
     print(summary_df[[
-        "Model", "Clean Pass Rate", "Degraded Pass Rate",
+        "Model",
+        "Clean Pass Rate (PASS+REVIEW / non-degraded)",
+        "Near Miss (within 20% of threshold)",
+        "Review (ref dense, TTS rate OK)",
         "Count Fails", "Position Fails", "Duration Fails",
         "Median Pos Offset", "Median Dur Ratio"
     ]].to_string(index=False))
 
     print("\n========== WHAT TO LOOK FOR ==========")
     print("Clean Pass Rate  → primary ranking — ref pauses/sec <= 1.0 only")
+    print("NEAR_MISS        → within 20% beyond threshold — marginal failure")
+    print("REVIEW           → ref too dense but TTS rate plausible")
     print("Count Fails      → TTS has wrong number of pauses")
     print("Position Fails   → pauses in wrong places — dramatic beats misaligned")
     print("Duration Fails   → pauses too short or too long")

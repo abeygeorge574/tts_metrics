@@ -146,9 +146,16 @@ SER_NEAR_MISS_MARGIN = 0.10
 PITCH_MEDIAN_THRESHOLD    = 30.0   # Hz — max acceptable |ref_median - tts_median|
 PITCH_STD_ABS_THRESHOLD   = 20.0   # Hz — minimum TTS pitch std (expressiveness floor)
 PITCH_STD_RATIO_THRESHOLD = 0.5    # TTS std must be >= 0.5x reference std
+PITCH_NEAR_MISS_MARGIN    = 0.20   # 20% beyond threshold → NEAR_MISS not FAIL
+TTS_VOICED_ABS_MIN        = 0.10   # TTS voiced ratio below this → Unvoiced_Abs fail when degraded
+TTS_PITCH_STD_ABS_MIN     = 5.0    # Hz — TTS F0 std below this → Flat_Abs fail when degraded
 
 # ── Duration thresholds ────────────────────────────────────────────────────────
-DURATION_TOLERANCE = 0.10   # ±10%
+DURATION_TOLERANCE        = 0.10   # ±10%
+DURATION_NEAR_MISS_MARGIN = 0.20   # 20% of tolerance band beyond threshold → NEAR_MISS
+REF_DUR_MIN               = 0.5    # seconds — ref shorter than this = degraded baseline
+TTS_DUR_ABS_MIN           = 0.5    # seconds — TTS shorter than this = near-silent
+TTS_DUR_ABS_MAX           = 30.0   # seconds — TTS longer than this = suspicious
 
 # ── VAD / Pause alignment thresholds ──────────────────────────────────────────
 SILENCE_DB                  = -40    # dB threshold for silence detection
@@ -200,6 +207,22 @@ ACCENT_REFERENCES = {  # kept for reference, not used by classifier-based gate
     "hebrew" : os.path.join(ACCENT_BASE_DIR, "accent_reference", "hebrew1.mp3"),
     "hindi"  : os.path.join(ACCENT_BASE_DIR, "accent_reference", "hindi1.mp3"),
 }
+
+# ── SER additions ────────────────────────────────────────────────────────────
+# (SER_CONFIDENCE_THRESHOLD already exists at 0.5)
+
+# ── VAD additions ────────────────────────────────────────────────────────────
+VAD_NEAR_MISS_MARGIN    = 0.20   # 20% beyond threshold → NEAR_MISS
+TTS_PAUSES_PER_SEC_MAX  = 2.0    # above this = implausibly dense TTS (abs bound)
+
+# ── WER additions ────────────────────────────────────────────────────────────
+WER_NEAR_MISS_MARGIN    = 0.20   # WER in (0.10, 0.12] → NEAR_MISS
+
+# ── Speaker similarity additions ─────────────────────────────────────────────
+SPEAKER_SIM_NEAR_MISS_MARGIN = 0.20  # score in [0.40, 0.50) → NEAR_MISS
+
+# ── Artifact additions ───────────────────────────────────────────────────────
+ARTIFACT_NEAR_MISS_MARGIN = 0.20  # metrics within 20% of threshold → NEAR_MISS
 
 # ── Conda environment names ────────────────────────────────────────────────────
 UTMOS_CONDA_ENV = "utmos"   # python 3.9 — used for WER, UTMOS, accent gates

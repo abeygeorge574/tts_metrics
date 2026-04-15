@@ -168,7 +168,9 @@ def run_gate(model_state=None):
     REFERENCE_DIR   = model_state.get("ref_dir")         or None
     ENROLLMENT_FILE = model_state.get("enrollment_file") or os.path.join(config.ENROLLMENT_DIR, "speaker.wav")
 
-    SPEAKER_SIM_THRESHOLD = config.SPEAKER_SIM_THRESHOLD
+    SPEAKER_SIM_THRESHOLD  = config.SPEAKER_SIM_THRESHOLD
+    NM_MARGIN              = config.SPEAKER_SIM_NEAR_MISS_MARGIN          # 0.20
+    NEAR_MISS_LOWER        = SPEAKER_SIM_THRESHOLD * (1 - NM_MARGIN)      # 0.40
 
     if not os.path.exists(MODELS_DIR):
         raise FileNotFoundError(f"Models folder not found: {MODELS_DIR}")
@@ -218,6 +220,10 @@ def run_gate(model_state=None):
     total        = len(model_folders) * len(sample_names)
     print(f"\nReady: {len(model_folders)} models × {len(sample_names)} samples = {total} evaluations")
 
+    fp_col    = "Final Pass (PASS/NEAR_MISS/FAIL, threshold≥0.50)"
+    score_col = "Cosine Score (threshold≥0.50, near_miss≥0.40)"
+    flag_col  = "Flag (—=clean|SHORT=<2s|NO_REF=no enrollment)"
+
     results = []
 
     for model in model_folders:
@@ -250,24 +256,34 @@ def run_gate(model_state=None):
                 results.append({
                     "Model"   : model,
                     "Sample"  : sample_name,
-                    "Score"   : None,
-                    "Pass"    : "SKIP",
+                    score_col : None,
+                    fp_col    : "SKIP",
                     "Ref Type": "NO_REF",
+                    flag_col  : "NO_REF",
                 })
                 continue
 
-            score  = compute_speaker_sim(reference_path, tts_path, classifier)
-            passed = score >= SPEAKER_SIM_THRESHOLD
+            score = compute_speaker_sim(reference_path, tts_path, classifier)
 
-            print(f"  Score  : {score} | {'PASS' if passed else 'FAIL'} | {ref_type}")
+            # Near-miss verdict
+            if score >= SPEAKER_SIM_THRESHOLD:
+                final_pass = "PASS"
+            elif score >= NEAR_MISS_LOWER:
+                final_pass = "NEAR_MISS"
+            else:
+                final_pass = "FAIL"
+
+            flag_val = "SHORT" if is_short else "—"
+
+            print(f"  Score  : {score} | {final_pass} | {ref_type}")
 
             results.append({
                 "Model"   : model,
                 "Sample"  : sample_name,
-                "Score"   : score,
-                "Pass"    : "PASS" if passed else "FAIL",
+                score_col : score,
+                fp_col    : final_pass,
                 "Ref Type": ref_type,
-                "Flag"    : "SHORT_SEGMENT" if is_short else "—",
+                flag_col  : flag_val,
             })
 
     print("\n\nAll evaluations complete.")
@@ -277,50 +293,62 @@ def run_gate(model_state=None):
     summary_rows = []
     for model in model_folders:
         model_df         = df[df["Model"] == model]
-        valid_df         = model_df[model_df["Score"].notna()]
-        scores           = valid_df["Score"]
-        pass_count       = (model_df["Pass"] == "PASS").sum()
+        valid_df         = model_df[model_df[score_col].notna()]
+        scores           = valid_df[score_col]
+        pass_count       = (model_df[fp_col] == "PASS").sum()
+        nm_count         = (model_df[fp_col] == "NEAR_MISS").sum()
         total            = len(model_df)
         enrollment_count = (model_df["Ref Type"] == "ENROLLMENT_REF").sum()
 
         summary_rows.append({
-            "Model"          : model,
-            "Segments"       : total,
-            "Mean Score"     : round(scores.mean(), 4)   if len(scores) > 0 else None,
-            "Median Score"   : round(scores.median(), 4) if len(scores) > 0 else None,
-            "Min Score"      : round(scores.min(), 4)    if len(scores) > 0 else None,
-            "Pass Rate"      : f"{pass_count}/{total}",
-            "Enrollment Rate": f"{enrollment_count}/{total}",
+            "Model"                          : model,
+            "Segments"                       : total,
+            "Mean Score"                     : round(scores.mean(), 4)   if len(scores) > 0 else None,
+            "Median Score"                   : round(scores.median(), 4) if len(scores) > 0 else None,
+            "Min Score"                      : round(scores.min(), 4)    if len(scores) > 0 else None,
+            "Pass Rate (PASS / total)"       : f"{pass_count}/{total}",
+            "Near Miss Rate (NEAR_MISS / total)": f"{nm_count}/{total}",
+            "Enrollment Rate"                : f"{enrollment_count}/{total}",
         })
 
     summary_df = pd.DataFrame(summary_rows)
-    summary_df["_pass_num"]       = summary_df["Pass Rate"].apply(lambda x: int(x.split("/")[0]))
+    summary_df["_pass_num"]       = summary_df["Pass Rate (PASS / total)"].apply(lambda x: int(x.split("/")[0]))
+    summary_df["_nm_num"]         = summary_df["Near Miss Rate (NEAR_MISS / total)"].apply(lambda x: int(x.split("/")[0]))
     summary_df["_enrollment_num"] = summary_df["Enrollment Rate"].apply(lambda x: int(x.split("/")[0]))
 
     summary_df = summary_df.sort_values(
-        by=["_pass_num", "Median Score", "Min Score", "_enrollment_num"],
-        ascending=[False, False, False, True]
-    ).drop(columns=["_pass_num", "_enrollment_num"])
+        by=["_pass_num", "_nm_num", "Median Score", "Min Score", "_enrollment_num"],
+        ascending=[False, False, False, False, True]
+    ).drop(columns=["_pass_num", "_nm_num", "_enrollment_num"])
 
     return df, summary_df
 
 
 # ── Print results ──────────────────────────────────────────────────────────────
 def print_results(df, summary_df):
+    fp_col    = "Final Pass (PASS/NEAR_MISS/FAIL, threshold≥0.50)"
+    score_col = "Cosine Score (threshold≥0.50, near_miss≥0.40)"
+    flag_col  = "Flag (—=clean|SHORT=<2s|NO_REF=no enrollment)"
+
     print("\n========== FULL PER-SEGMENT RESULTS ==========")
-    print(df[["Model", "Sample", "Score", "Pass", "Ref Type"]].to_string(index=False))
+    print(df[["Model", "Sample", score_col, fp_col, "Ref Type", flag_col]].to_string(index=False))
 
     print("\n========== MODEL COMPARISON SUMMARY ==========")
     print(summary_df[[
-        "Model", "Pass Rate", "Median Score", "Min Score", "Enrollment Rate"
+        "Model",
+        "Pass Rate (PASS / total)",
+        "Near Miss Rate (NEAR_MISS / total)",
+        "Median Score", "Min Score", "Enrollment Rate"
     ]].to_string(index=False))
 
     print("\n========== WHAT TO LOOK FOR ==========")
     print("Pass Rate      → primary ranking")
+    print("NEAR_MISS      → score in [0.40, 0.50) — marginal, warrants review")
     print("Median Score   → typical speaker similarity")
     print("Min Score      → worst segment")
     print("Enrollment Rate→ segments using enrollment (less reliable than utterance ref)")
-    print(f"\nThreshold: >= {config.SPEAKER_SIM_THRESHOLD}")
+    print(f"\nThreshold: >= {config.SPEAKER_SIM_THRESHOLD} | "
+          f"Near miss: >= {round(config.SPEAKER_SIM_THRESHOLD * (1 - config.SPEAKER_SIM_NEAR_MISS_MARGIN), 2)}")
 
 
 # ── Save results ───────────────────────────────────────────────────────────────

@@ -11,7 +11,9 @@ Pass/fail logic (top-2 overlap):
   PASS      — ref top-1 matches TTS top-1
   NEAR_MISS — top-2 label sets intersect but top-1s differ
               (e.g. ref=angry/fearful, TTS=fearful/surprised → fearful matches)
+  REVIEW    — ref top1 conf < 0.5 (degraded) but TTS top1 conf >= 0.5 (abs OK)
   FAIL      — no label in common between ref top-2 and TTS top-2
+            — or: ref degraded AND TTS also low confidence
 
 Arousal from MERaLiON dims is recorded as a diagnostic column (not pass/fail).
 Valence is also recorded but NOT used in pass/fail due to cross-lingual bias
@@ -167,18 +169,25 @@ def run_gate(model_state=None):
             if not os.path.exists(ref_path):
                 print(f"  No reference — skipping")
                 results.append({
-                    "Model"        : m,
-                    "Sample"       : sample_name,
-                    "Ref Top1"     : None, "Ref Top1 Conf": None,
-                    "Ref Top2"     : None, "Ref Top2 Conf": None,
-                    "Ref Arousal"  : None, "Ref Valence"  : None,
-                    "TTS Top1"     : None, "TTS Top1 Conf": None,
-                    "TTS Top2"     : None, "TTS Top2 Conf": None,
-                    "TTS Arousal"  : None, "TTS Valence"  : None,
-                    "Arousal Delta": None,
-                    "Emotion Pass" : "SKIP",
-                    "Arousal Pass" : "SKIP",
-                    "Flag"         : "NO_REF",
+                    "Model"                                          : m,
+                    "Sample"                                         : sample_name,
+                    "Ref Top1"                                       : None,
+                    "Ref Top1 Conf (degraded if<0.50)"               : None,
+                    "Ref Top2"                                       : None,
+                    "Ref Top2 Conf"                                  : None,
+                    "Ref Arousal"                                    : None,
+                    "Ref Valence"                                    : None,
+                    "TTS Top1"                                       : None,
+                    "TTS Top1 Conf"                                  : None,
+                    "TTS Top2"                                       : None,
+                    "TTS Top2 Conf"                                  : None,
+                    "TTS Arousal"                                    : None,
+                    "TTS Valence"                                    : None,
+                    "Arousal Delta (threshold≤0.15)"                 : None,
+                    "Emotion Pass (PASS/NEAR_MISS/REVIEW/FAIL)"      : "SKIP",
+                    "Arousal Pass (PASS/FAIL, threshold≤0.15)"       : "SKIP",
+                    "Ref Flag (—=clean|LOW_CONF_REF=ref_conf<0.50)"  : "NO_REF",
+                    "_is_degraded"                                   : True,
                 })
                 continue
 
@@ -191,18 +200,30 @@ def run_gate(model_state=None):
             if r_t1 is None or t_t1 is None:
                 emotion_pass = "ERROR"
                 arousal_pass = "ERROR"
-                flag         = "ERROR"
+                ref_flag     = "ERROR"
+                is_degraded  = False
             else:
-                ref_set = {r_t1, r_t2}
-                tts_set = {t_t1, t_t2}
+                # Degraded when ref top1 confidence is below threshold
+                is_degraded = r_t1c is not None and r_t1c < config.SER_CONFIDENCE_THRESHOLD
+                ref_flag    = "LOW_CONF_REF" if is_degraded else "—"
 
-                if r_t1 == t_t1:
-                    emotion_pass = "PASS"
-                elif ref_set & tts_set:
-                    emotion_pass = "NEAR_MISS"
+                if is_degraded:
+                    # Skip normal emotion pass/fail; use REVIEW or absolute FAIL
+                    tts_conf_ok = t_t1c is not None and t_t1c >= config.SER_CONFIDENCE_THRESHOLD
+                    if tts_conf_ok:
+                        emotion_pass = "REVIEW"
+                    else:
+                        emotion_pass = "FAIL (Low_Conf_Abs)"
                 else:
-                    emotion_pass = "FAIL"
-                flag = "—"
+                    ref_set = {r_t1, r_t2}
+                    tts_set = {t_t1, t_t2}
+
+                    if r_t1 == t_t1:
+                        emotion_pass = "PASS"
+                    elif ref_set & tts_set:
+                        emotion_pass = "NEAR_MISS"
+                    else:
+                        emotion_pass = "FAIL"
 
             ar_delta = round(abs(r_ar - t_ar), 4) if r_ar is not None and t_ar is not None else None
             if ar_delta is not None:
@@ -210,21 +231,28 @@ def run_gate(model_state=None):
             else:
                 arousal_pass = "ERROR"
 
-            print(f"  → Emotion:{emotion_pass}  Arousal:{arousal_pass}  ar_Δ={ar_delta}")
+            print(f"  → Emotion:{emotion_pass}  Arousal:{arousal_pass}  ar_Δ={ar_delta}  RefFlag:{ref_flag}")
 
             results.append({
-                "Model"        : m,
-                "Sample"       : sample_name,
-                "Ref Top1"     : r_t1, "Ref Top1 Conf": r_t1c,
-                "Ref Top2"     : r_t2, "Ref Top2 Conf": r_t2c,
-                "Ref Arousal"  : r_ar, "Ref Valence"  : r_val,
-                "TTS Top1"     : t_t1, "TTS Top1 Conf": t_t1c,
-                "TTS Top2"     : t_t2, "TTS Top2 Conf": t_t2c,
-                "TTS Arousal"  : t_ar, "TTS Valence"  : t_val,
-                "Arousal Delta": ar_delta,
-                "Emotion Pass" : emotion_pass,
-                "Arousal Pass" : arousal_pass,
-                "Flag"         : flag,
+                "Model"                                          : m,
+                "Sample"                                         : sample_name,
+                "Ref Top1"                                       : r_t1,
+                "Ref Top1 Conf (degraded if<0.50)"               : r_t1c,
+                "Ref Top2"                                       : r_t2,
+                "Ref Top2 Conf"                                  : r_t2c,
+                "Ref Arousal"                                    : r_ar,
+                "Ref Valence"                                    : r_val,
+                "TTS Top1"                                       : t_t1,
+                "TTS Top1 Conf"                                  : t_t1c,
+                "TTS Top2"                                       : t_t2,
+                "TTS Top2 Conf"                                  : t_t2c,
+                "TTS Arousal"                                    : t_ar,
+                "TTS Valence"                                    : t_val,
+                "Arousal Delta (threshold≤0.15)"                 : ar_delta,
+                "Emotion Pass (PASS/NEAR_MISS/REVIEW/FAIL)"      : emotion_pass,
+                "Arousal Pass (PASS/FAIL, threshold≤0.15)"       : arousal_pass,
+                "Ref Flag (—=clean|LOW_CONF_REF=ref_conf<0.50)"  : ref_flag,
+                "_is_degraded"                                   : is_degraded,
             })
 
     print("\n\nAll evaluations complete.")
@@ -232,35 +260,50 @@ def run_gate(model_state=None):
 
     summary_rows = []
     for m in model_folders:
-        model_df  = df[df["Model"] == m]
-        scored_df = model_df[model_df["Emotion Pass"].isin(["PASS", "NEAR_MISS", "FAIL"])]
-        e_pass = (scored_df["Emotion Pass"] == "PASS").sum()
-        e_nm   = (scored_df["Emotion Pass"] == "NEAR_MISS").sum()
-        e_fail = (scored_df["Emotion Pass"] == "FAIL").sum()
-        total  = len(scored_df)
+        model_df    = df[df["Model"] == m]
+        ep_col      = "Emotion Pass (PASS/NEAR_MISS/REVIEW/FAIL)"
+        ap_col      = "Arousal Pass (PASS/FAIL, threshold≤0.15)"
+        flag_col    = "Ref Flag (—=clean|LOW_CONF_REF=ref_conf<0.50)"
 
-        ar_scored = model_df[model_df["Arousal Pass"].isin(["PASS", "FAIL"])]
-        ar_pass = (ar_scored["Arousal Pass"] == "PASS").sum()
-        ar_total = len(ar_scored)
+        # Scored = non-degraded rows with a real verdict (exclude SKIP/ERROR/REVIEW/FAIL(Low_Conf_Abs))
+        scored_df   = model_df[model_df[ep_col].isin(["PASS", "NEAR_MISS", "FAIL"])]
+        e_pass      = (scored_df[ep_col] == "PASS").sum()
+        e_nm        = (scored_df[ep_col] == "NEAR_MISS").sum()
+        e_fail      = (scored_df[ep_col] == "FAIL").sum()
+        total       = len(scored_df)
 
-        fail_df = scored_df[scored_df["Emotion Pass"] == "FAIL"]
+        # REVIEW segments (degraded ref, TTS confidence OK)
+        review_count = (model_df[ep_col] == "REVIEW").sum()
+
+        # Degraded count
+        degraded_count = model_df["_is_degraded"].sum() if "_is_degraded" in model_df.columns else 0
+
+        ar_scored   = model_df[model_df[ap_col].isin(["PASS", "FAIL"])]
+        ar_pass     = (ar_scored[ap_col] == "PASS").sum()
+        ar_total    = len(ar_scored)
+
+        fail_df = scored_df[scored_df[ep_col] == "FAIL"]
         common_mismatch = (
             fail_df["TTS Top1"].value_counts().index[0]
             if len(fail_df) > 0 else "—"
         )
 
+        ar_delta_col = "Arousal Delta (threshold≤0.15)"
         summary_rows.append({
-            "Model"              : m,
-            "Total"              : len(model_df),
-            "Emotion Pass Rate"  : f"{e_pass}/{total}",
-            "Emotion +NearMiss"  : f"{e_pass + e_nm}/{total}",
-            "Arousal Pass Rate"  : f"{ar_pass}/{ar_total}",
-            "Median Arousal Δ"   : round(scored_df["Arousal Delta"].dropna().median(), 4) if total > 0 else None,
-            "Common Mismatch"    : common_mismatch,
+            "Model"                                           : m,
+            "Total"                                           : len(model_df),
+            "Emotion Pass Rate (PASS / scored)"               : f"{e_pass}/{total}",
+            "Emotion Pass+NearMiss Rate (PASS+NEAR_MISS / scored)": f"{e_pass + e_nm}/{total}",
+            "Arousal Pass Rate (PASS / scored)"               : f"{ar_pass}/{ar_total}",
+            "Near Miss (within 20% of threshold)"             : int(e_nm),
+            "Review (ref low conf, TTS conf OK)"              : int(review_count),
+            "Degraded Segments"                               : int(degraded_count),
+            "Median Arousal Δ"                                : round(scored_df[ar_delta_col].dropna().median(), 4) if total > 0 else None,
+            "Common Mismatch"                                 : common_mismatch,
         })
 
     summary_df = pd.DataFrame(summary_rows)
-    summary_df["_sort"] = summary_df["Emotion +NearMiss"].apply(
+    summary_df["_sort"] = summary_df["Emotion Pass+NearMiss Rate (PASS+NEAR_MISS / scored)"].apply(
         lambda x: int(x.split("/")[0]) if "/" in str(x) else -1
     )
     summary_df = summary_df.sort_values("_sort", ascending=False).drop(columns=["_sort"])
@@ -273,10 +316,12 @@ def print_results(df, summary_df):
     print("\n========== FULL PER-SEGMENT RESULTS ==========")
     cols = [
         "Model", "Sample",
-        "Ref Top1", "Ref Top1 Conf", "Ref Top2",
+        "Ref Top1", "Ref Top1 Conf (degraded if<0.50)", "Ref Top2",
         "TTS Top1", "TTS Top1 Conf", "TTS Top2",
-        "Ref Arousal", "TTS Arousal", "Arousal Delta",
-        "Emotion Pass", "Arousal Pass", "Flag",
+        "Ref Arousal", "TTS Arousal", "Arousal Delta (threshold≤0.15)",
+        "Emotion Pass (PASS/NEAR_MISS/REVIEW/FAIL)",
+        "Arousal Pass (PASS/FAIL, threshold≤0.15)",
+        "Ref Flag (—=clean|LOW_CONF_REF=ref_conf<0.50)",
     ]
     print(df[cols].to_string(index=False))
 
@@ -285,8 +330,10 @@ def print_results(df, summary_df):
 
     print("\n========== WHAT TO LOOK FOR ==========")
     print("Emotion Pass  — PASS: top-1 match | NEAR_MISS: top-2 overlap | FAIL: no overlap")
+    print("REVIEW        — ref confidence < 0.5 (degraded) but TTS confidence >= 0.5 (abs OK)")
     print("Arousal Pass  — PASS if |ref_arousal − tts_arousal| ≤ threshold")
     print(f"Arousal threshold: {config.AROUSAL_DELTA_THRESHOLD}")
+    print(f"SER confidence threshold: {config.SER_CONFIDENCE_THRESHOLD}")
     print("Valence       — recorded only, not in any pass/fail (cross-lingual bias)")
     print()
     print("Model: MERaLiON-SER-v1 (Whisper-Medium + LoRA + ECAPA-TDNN)")
@@ -296,7 +343,8 @@ def print_results(df, summary_df):
 # ── Save results ───────────────────────────────────────────────────────────────
 def save_results(df, summary_df, output_dir):
     os.makedirs(output_dir, exist_ok=True)
-    df.to_csv(os.path.join(output_dir, "per_segment_results.csv"), index=False)
+    seg_df = df.drop(columns=["_is_degraded"], errors="ignore")
+    seg_df.to_csv(os.path.join(output_dir, "per_segment_results.csv"), index=False)
     summary_df.to_csv(os.path.join(output_dir, "model_summary.csv"), index=False)
     print(f"Results saved to {output_dir}")
 

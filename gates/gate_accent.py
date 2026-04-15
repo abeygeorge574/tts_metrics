@@ -40,9 +40,13 @@ def _load_ecapa():
     from speechbrain.inference.classifiers import EncoderClassifier
 
     savedir = os.path.join(os.path.expanduser("~"), ".cache", "accent_ecapa")
-    print("Loading Jzuluaga/accent-id-commonaccent_ecapa (ECAPA-TDNN, 16 labels)...")
+    # Use local cache path as source when available — avoids hf_hub_download()
+    # which breaks on newer huggingface_hub versions (use_auth_token removed).
+    hf_id = "Jzuluaga/accent-id-commonaccent_ecapa"
+    source = savedir if os.path.isfile(os.path.join(savedir, "hyperparams.yaml")) else hf_id
+    print(f"Loading {hf_id} (ECAPA-TDNN, 16 labels, source={'local cache' if source == savedir else 'HuggingFace'})...")
     clf = EncoderClassifier.from_hparams(
-        source="Jzuluaga/accent-id-commonaccent_ecapa",
+        source=source,
         savedir=savedir,
         run_opts={"device": "cpu"},
     )

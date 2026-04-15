@@ -307,9 +307,9 @@ def run_gate(model_state=None):
         deg_total  = len(degraded_df)
         deg_review = (degraded_df[FINAL_COL] == "REVIEW").sum()
 
-        flat_abs_count   = model_df[FINAL_COL].str.contains("Flat_Abs").sum()
-        flat_ratio_count = model_df[FINAL_COL].str.contains("Flat_Ratio").sum()
-        register_count   = model_df[FINAL_COL].str.contains("Register").sum()
+        flat_abs_count   = (model_df[FINAL_COL].str.startswith("FAIL") & model_df[FINAL_COL].str.contains("Flat_Abs",   na=False)).sum()
+        flat_ratio_count = (model_df[FINAL_COL].str.startswith("FAIL") & model_df[FINAL_COL].str.contains("Flat_Ratio", na=False)).sum()
+        register_count   = (model_df[FINAL_COL].str.startswith("FAIL") & model_df[FINAL_COL].str.contains("Register",   na=False)).sum()
 
         std_col   = "TTS Std Hz (expressiveness; abs floor>=20Hz)"
         range_col = "TTS Range Hz (F0 max-min)"
