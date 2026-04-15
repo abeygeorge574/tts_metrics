@@ -16,7 +16,7 @@ OUTPUT_DIR = os.path.join(TTS_ROOT, "sts_output")
 NISQA_REPO          = os.path.join(TTS_ROOT, "weights", "nisqa")
 NISQA_WEIGHT        = os.path.join(NISQA_REPO, "weights", "nisqa.tar")
 SPEAKER_SIM_WEIGHTS = os.path.join(TTS_ROOT, "weights", "speaker_sim")
-MERALION_LOCAL_PATH = "/tmp/claude/hf_cache/meralion-ser-v1"
+MERALION_LOCAL_PATH = os.path.join(TTS_ROOT, "weights", "meralion_ser")
 UTMOS_CONDA_ENV     = "utmos"
 
 # ── Short segment ─────────────────────────────────────────────────────────────
