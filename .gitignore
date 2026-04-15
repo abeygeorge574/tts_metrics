@@ -26,4 +26,5 @@ __pycache__/
 
 # Pipeline output
 output/
+sts_output/
 *.onnx
