@@ -156,7 +156,9 @@ POSITION_HARD_LIMIT         = 3.0   # seconds — pairs beyond this never assign
 POSITION_WEIGHT             = 0.3   # weight for position component of cost
 DURATION_WEIGHT             = 0.7   # weight for duration component of cost
 POSITION_SCALE              = 3.0   # seconds — position diff of this size = cost 1.0
-PAUSE_COUNT_THRESHOLD       = 20    # max acceptable pause count difference
+PAUSE_COUNT_THRESHOLD       = 20    # max acceptable pause count difference (absolute cap)
+PAUSE_COUNT_RATE_THRESHOLD  = 0.5   # pauses/sec — dynamic threshold = min(CAP, max(2, ref_dur * rate))
+                                     # 5s→2, 10s→5, 20s→10, 40s+→capped at 20
 POSITION_OFFSET_THRESHOLD   = 0.2   # seconds — tightened 0.5→0.2: dubbing sync requires tight pause alignment
 VAD_DURATION_RATIO_MIN      = 0.75  # TTS pause at least 75% as long as reference
 VAD_DURATION_RATIO_MAX      = 1.25  # TTS pause at most 125% as long as reference

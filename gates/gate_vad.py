@@ -208,12 +208,14 @@ def run_gate(model_state=None):
     MODELS_DIR    = (model_state or {}).get("models_dir") or config.MODELS_DIR
     REFERENCE_DIR = (model_state or {}).get("ref_dir")    or config.REFERENCE_DIR
 
-    REF_PAUSES_PER_SECOND_LIMIT = config.REF_PAUSES_PER_SECOND_LIMIT
-    VAD_NEAR_MISS_MARGIN        = config.VAD_NEAR_MISS_MARGIN
-    TTS_PAUSES_PER_SEC_MAX      = config.TTS_PAUSES_PER_SEC_MAX
-    POSITION_OFFSET_THRESHOLD   = config.POSITION_OFFSET_THRESHOLD
-    DURATION_RATIO_MIN          = config.VAD_DURATION_RATIO_MIN
-    DURATION_RATIO_MAX          = config.VAD_DURATION_RATIO_MAX
+    REF_PAUSES_PER_SECOND_LIMIT  = config.REF_PAUSES_PER_SECOND_LIMIT
+    VAD_NEAR_MISS_MARGIN         = config.VAD_NEAR_MISS_MARGIN
+    TTS_PAUSES_PER_SEC_MAX       = config.TTS_PAUSES_PER_SEC_MAX
+    POSITION_OFFSET_THRESHOLD    = config.POSITION_OFFSET_THRESHOLD
+    DURATION_RATIO_MIN           = config.VAD_DURATION_RATIO_MIN
+    DURATION_RATIO_MAX           = config.VAD_DURATION_RATIO_MAX
+    PAUSE_COUNT_THRESHOLD        = config.PAUSE_COUNT_THRESHOLD       # absolute cap
+    PAUSE_COUNT_RATE_THRESHOLD   = config.PAUSE_COUNT_RATE_THRESHOLD  # pauses/sec
 
     for folder in [REFERENCE_DIR, MODELS_DIR]:
         if not os.path.exists(folder):
@@ -282,7 +284,8 @@ def run_gate(model_state=None):
                     "Matched"                                         : None,
                     "Unmatched Ref"                                   : None,
                     "Unmatched TTS"                                   : None,
-                    "Count Delta (threshold≤20)"                      : None,
+                    "Count Delta"                                     : None,
+                    "Count Threshold (dynamic)"                       : None,
                     "Med Pos Offset s (threshold≤0.20s)"              : None,
                     "Med Dur Ratio (pass band 0.75–1.25)"             : None,
                     "Count Pass"                                      : "—",
@@ -310,6 +313,15 @@ def run_gate(model_state=None):
 
                 cmp = compare_pauses(ref_pauses, tts_pauses)
 
+                # Dynamic count threshold: scales with reference audio duration.
+                # min(cap=20, max(floor=2, ref_dur_s × rate=0.5))
+                # e.g. 5s→2, 10s→5, 20s→10, 40s+→20
+                count_threshold = min(
+                    PAUSE_COUNT_THRESHOLD,
+                    max(2, round(ref_duration * PAUSE_COUNT_RATE_THRESHOLD))
+                )
+                count_pass = cmp["count_delta"] <= count_threshold
+
                 if is_degraded:
                     # REVIEW if TTS rate is within absolute bounds, else FAIL
                     tts_pauses_per_sec = len(tts_pauses) / ref_duration if ref_duration > 0 else 0
@@ -323,8 +335,8 @@ def run_gate(model_state=None):
                     near_misses = []
                     hard_fails  = []
 
-                    # Count check
-                    if not cmp["count_pass"]:
+                    # Count check (dynamic threshold)
+                    if not count_pass:
                         hard_fails.append("Count")
 
                     # Position near-miss
@@ -373,10 +385,11 @@ def run_gate(model_state=None):
                     "Matched"                                        : cmp["matched_count"],
                     "Unmatched Ref"                                  : cmp["unmatched_ref"],
                     "Unmatched TTS"                                  : cmp["unmatched_tts"],
-                    "Count Delta (threshold≤20)"                     : cmp["count_delta"],
+                    "Count Delta"                                    : cmp["count_delta"],
+                    "Count Threshold (dynamic)"                      : count_threshold,
                     "Med Pos Offset s (threshold≤0.20s)"             : cmp["med_position_offset"],
                     "Med Dur Ratio (pass band 0.75–1.25)"            : cmp["med_duration_ratio"],
-                    "Count Pass"                                     : "PASS" if cmp["count_pass"] else "FAIL",
+                    "Count Pass"                                     : "PASS" if count_pass else "FAIL",
                     "Position Pass"                                  : "PASS" if cmp["position_pass"] else "FAIL" if cmp["position_pass"] is not None else "—",
                     "Duration Pass"                                  : "PASS" if cmp["duration_pass"] else "FAIL" if cmp["duration_pass"] is not None else "—",
                     "Final Pass (PASS/NEAR_MISS/REVIEW/FAIL)"        : final_pass,
@@ -394,7 +407,8 @@ def run_gate(model_state=None):
                     "Matched"                                        : None,
                     "Unmatched Ref"                                  : None,
                     "Unmatched TTS"                                  : None,
-                    "Count Delta (threshold≤20)"                     : None,
+                    "Count Delta"                                    : None,
+                    "Count Threshold (dynamic)"                      : None,
                     "Med Pos Offset s (threshold≤0.20s)"             : None,
                     "Med Dur Ratio (pass band 0.75–1.25)"            : None,
                     "Count Pass"                                     : "—",
@@ -480,7 +494,7 @@ def print_results(df, summary_df):
     fp_col  = "Final Pass (PASS/NEAR_MISS/REVIEW/FAIL)"
     pos_col = "Med Pos Offset s (threshold≤0.20s)"
     dur_col = "Med Dur Ratio (pass band 0.75–1.25)"
-    cnt_col = "Count Delta (threshold≤20)"
+    cnt_col = "Count Delta"
     flag_col = "Ref Flag (—=clean|REF_DENSE=pauses/sec>1.0)"
 
     print("\n========== FULL PER-SEGMENT RESULTS ==========")
@@ -510,9 +524,10 @@ def print_results(df, summary_df):
     print("Count Fails      → TTS has wrong number of pauses")
     print("Position Fails   → pauses in wrong places — dramatic beats misaligned")
     print("Duration Fails   → pauses too short or too long")
-    print(f"\nThresholds: Count ±{config.PAUSE_COUNT_THRESHOLD} | "
+    print(f"\nThresholds: Count dynamic (min=2, cap={config.PAUSE_COUNT_THRESHOLD}, rate={config.PAUSE_COUNT_RATE_THRESHOLD}/s) | "
           f"Position <= {config.POSITION_OFFSET_THRESHOLD}s | "
           f"Duration ratio {config.VAD_DURATION_RATIO_MIN}–{config.VAD_DURATION_RATIO_MAX}")
+    print(f"  Count threshold examples: 5s→2, 10s→5, 20s→10, 40s+→{config.PAUSE_COUNT_THRESHOLD}")
 
 
 # ── Save results ───────────────────────────────────────────────────────────────
