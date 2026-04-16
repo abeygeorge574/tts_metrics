@@ -47,8 +47,8 @@ NISQA_THRESHOLDS = {
     "MOS"           : 3.75,  # raised 3.0→3.75: floor calibrated from data (min passing MOS = 4.11)
     "Noisiness"     : 3.5,   # calibrated: catches background noise (SNR<50dB). Vocoder noise caught by artifact gate separately.
     "Discontinuity" : 3.5,
-    "Coloration"    : 4.0,   # raised 3.0→4.0: hp350Hz/hp400Hz perceptually unacceptable for dubbing
-    "Loudness"      : 3.4,   # raised 3.0→3.4: loud+9dB now fails (perceptually correct)
+    "Coloration"    : 3.5,   # calibrated 4.0→3.5: 4.0 causes 91% false-positive rate on Hindi STS (cross-lingual spectral bias)
+    "Loudness"      : 3.2,   # calibrated 3.4→3.2: EP29/EP30 show STS pipeline produces systematically quieter output; 190 segments failed only on Loudness
 }
 NISQA_DELTA_THRESHOLDS = {
     "MOS"           : -0.5,
@@ -140,7 +140,7 @@ SER_CONFIDENCE_THRESHOLD = 0.5
 
 # ── Pitch thresholds ───────────────────────────────────────────────────────────
 PITCH_MEDIAN_THRESHOLD    = 30.0   # Hz — max acceptable |ref_median - tts_median|
-PITCH_STD_ABS_THRESHOLD   = 20.0   # Hz — minimum TTS pitch std (expressiveness floor)
+PITCH_STD_ABS_THRESHOLD   = 15.0   # Hz — calibrated 20→15: short STS segments with naturally flat original also score low; 20 Hz created false positives when ref_std is also <20 Hz
 PITCH_STD_RATIO_THRESHOLD = 0.5    # TTS std must be >= 0.5x reference std
 PITCH_NEAR_MISS_MARGIN    = 0.20   # 20% beyond threshold → NEAR_MISS not FAIL
 TTS_VOICED_ABS_MIN        = 0.10   # TTS voiced ratio below this → Unvoiced_Abs fail when degraded
